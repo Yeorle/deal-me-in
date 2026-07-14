@@ -1,0 +1,83 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+    --color-accent-50: #f3f5ec;
+    --color-accent-100: #e6ead4;
+    --color-accent-200: #cdd4a9;
+    --color-accent-500: #7e8c54;
+    --color-accent-600: #6e7c47;
+    --color-accent-700: #5a6539;
+}
+
+html,
+body,
+#root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+}
+
+@layer base {
+    html {
+        font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
+        font-feature-settings: 'ss01', 'cv11';
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        color: #1a1a1a;
+        background-color: #f5f5f5;
+    }
+
+    body {
+        font-size: 14px;
+        line-height: 1.5;
+    }
+
+    input,
+    select,
+    textarea,
+    button {
+        font-family: inherit;
+        font-size: inherit;
+        color: inherit;
+    }
+
+    /* Use tabular numerals for any element with .tabular */
+    .tabular {
+        font-variant-numeric: tabular-nums;
+        font-feature-settings: 'tnum';
+    }
+
+    /* Strip browser default styling on number inputs in this app's color palette */
+    input[type='number']::-webkit-outer-spin-button,
+    input[type='number']::-webkit-inner-spin-button {
+        opacity: 1;
+    }
+
+    *:focus-visible {
+        outline: 2px solid var(--color-accent-500);
+        outline-offset: 1px;
+    }
+
+    /* Custom thin scrollbar */
+    ::-webkit-scrollbar {
+        width: 10px;
+        height: 10px;
+    }
+
+    ::-webkit-scrollbar-track {
+        background: transparent;
+    }
+
+    ::-webkit-scrollbar-thumb {
+        background: #dcdcdc;
+        border-radius: 4px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+        background: #c4c4c4;
+    }
+}
