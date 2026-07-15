@@ -21,6 +21,12 @@ Built with Electron, React and TypeScript.
 - **Multiple tournaments** — run several tournaments and switch between them.
 - **Localization & theming** — English / French, several accent colors, and EUR / USD / GBP / CHF currency formatting.
 
+## Screenshots
+
+| Tournament management | Player editing |
+| --- | --- |
+| ![Tournament management](./docs/images/tournament_manage.png) | ![Player editing](./docs/images/player_edit.png) |
+
 ## Technology
 
 | Concern | Choice |
