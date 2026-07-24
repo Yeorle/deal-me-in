@@ -20,7 +20,7 @@ vi.mock('../electron/db', () => ({
 }));
 
 import { TournamentManager, shuffle, Player, Prize } from '../electron/tournament';
-import { archiveTournament, saveTournamentResults } from '../electron/db';
+import { archiveTournament, saveTournamentResults, updateTournamentState } from '../electron/db';
 
 function fakeWindow(): BrowserWindow {
     return {
@@ -254,5 +254,26 @@ describe('standings and prizes', () => {
         const [, rows] = vi.mocked(saveTournamentResults).mock.calls[0];
         expect(rows).toHaveLength(3);
         expect(new Set(rows.map(r => r.place))).toEqual(new Set([1, 2, 3]));
+    });
+});
+
+describe('reloadFromDb (backup import)', () => {
+    it('discards the live tournament without archiving or writing through the old id', () => {
+        const manager = setup({ players: 4 });
+        expect(manager.getState().isActive).toBe(true);
+
+        vi.mocked(updateTournamentState).mockClear();
+        manager.reloadFromDb();
+
+        // The old row must be neither archived nor overwritten — after a backup
+        // import its id belongs to freshly imported data.
+        expect(archiveTournament).not.toHaveBeenCalled();
+        expect(updateTournamentState).not.toHaveBeenCalled();
+
+        // No running tournament in the (mocked) DB → singleton ends up empty.
+        const state = manager.getState();
+        expect(state.isActive).toBe(false);
+        expect(state.tables).toHaveLength(0);
+        expect(state.bustedPlayers).toHaveLength(0);
     });
 });

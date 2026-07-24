@@ -138,6 +138,17 @@ export interface ProjectorTheme {
     textOutlineWidth: number;         // px stroke width
 }
 
+// Result of the backup export/import IPC calls. `canceled` means the user
+// dismissed the native dialog (not an error). `path` is the written archive
+// (export); `backupPath` is the automatic pre-import safety copy (import).
+export interface BackupOperationResult {
+    ok: boolean;
+    canceled?: boolean;
+    path?: string;
+    backupPath?: string;
+    error?: string;
+}
+
 export interface AppSettings {
     language: Language;
     accentColor: AccentName;
@@ -216,6 +227,8 @@ declare global {
             getSettings: () => Promise<Record<string, string>>;
             setSetting: (key: string, value: string) => Promise<Record<string, string>>;
             importProjectorImage: (sourcePath: string) => Promise<string>;
+            exportData: () => Promise<BackupOperationResult>;
+            importData: () => Promise<BackupOperationResult>;
             getPathForFile: (file: File) => string;
             onSettingsUpdate: (callback: (settings: Record<string, string>) => void) => () => void;
             onSoundCue: (callback: (cue: string) => void) => () => void;
