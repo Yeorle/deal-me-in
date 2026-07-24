@@ -224,6 +224,18 @@ export class TournamentManager {
         if (saved) this.applySavedRow(saved);
     }
 
+    // Discard the live tournament WITHOUT saving or archiving, then rehydrate
+    // from the database — used after a backup import replaces the DB contents.
+    // The id is nulled first: the row it points at now belongs to the imported
+    // data, and any save() through it would corrupt a freshly imported row.
+    public reloadFromDb() {
+        this.tournamentId = null;
+        this.pauseTimer();
+        this.clearInMemory();
+        this.load();
+        this.broadcastState();
+    }
+
     public switchTournament(id: number) {
         if (this.tournamentId === id) return;
 
@@ -822,6 +834,13 @@ export class TournamentManager {
     private save() {
         if (!this.tournamentId) return;
         updateTournamentState(this.tournamentId, this.getStateForSave());
+    }
+
+    // Flush the live tournament to its DB row on demand (no-op when idle).
+    // Used by the backup export so the archive captures the state as of the
+    // moment of export, not the last broadcast.
+    public persist() {
+        this.save();
     }
 
     private broadcastState() {

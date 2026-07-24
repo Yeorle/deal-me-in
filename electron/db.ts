@@ -449,6 +449,113 @@ export function getPlayerProfile(id: number) {
   return { player, stats, history };
 }
 
+// ---------------------------------------------------------------------------
+// Full-database dump helpers for backup export/import (see electron/backup.ts).
+
+export interface PlayerExportRow {
+  id: number;
+  name: string;
+  nickname: string | null;
+  email: string | null;
+  photo_path: string | null;
+  is_deleted: number;
+}
+
+export interface StructureExportRow {
+  id: number;
+  name: string;
+  starting_chips: number;
+  data: string | null;
+}
+
+export interface TournamentExportRow {
+  id: number;
+  name: string;
+  start_date: string | null;
+  end_date: string | null;
+  status: string;
+  state: string | null;
+  entry_fee: number;
+  currency: string;
+  structure_id: number | null;
+  structure_name: string | null;
+}
+
+export interface TournamentResultExportRow {
+  id: number;
+  tournament_id: number;
+  player_id: number;
+  place: number;
+  playtime_sec: number;
+  prize: number;
+  entry_fee: number;
+}
+
+export interface SettingExportRow {
+  key: string;
+  value: string;
+}
+
+export interface DataDumpRows {
+  players: PlayerExportRow[];
+  structures: StructureExportRow[];
+  tournaments: TournamentExportRow[];
+  tournamentResults: TournamentResultExportRow[];
+  settings: SettingExportRow[];
+}
+
+// Unlike getPlayers(), this must NOT filter is_deleted: soft-deleted rows have
+// to round-trip through a backup or result joins break after import.
+export function getAllRowsForExport(): DataDumpRows {
+  const database = getDB();
+  return {
+    players: database.prepare('SELECT id, name, nickname, email, photo_path, is_deleted FROM Players ORDER BY id').all() as PlayerExportRow[],
+    structures: database.prepare('SELECT id, name, starting_chips, data FROM Structures ORDER BY id').all() as StructureExportRow[],
+    tournaments: database.prepare('SELECT id, name, start_date, end_date, status, state, entry_fee, currency, structure_id, structure_name FROM Tournaments ORDER BY id').all() as TournamentExportRow[],
+    tournamentResults: database.prepare('SELECT id, tournament_id, player_id, place, playtime_sec, prize, entry_fee FROM TournamentResults ORDER BY id').all() as TournamentResultExportRow[],
+    settings: database.prepare('SELECT key, value FROM Settings ORDER BY key').all() as SettingExportRow[],
+  };
+}
+
+// Full-replace restore: wipe all five tables and re-insert with original ids
+// (TournamentResults references player_id/tournament_id, Tournaments references
+// structure_id). One transaction so any failure leaves the previous data intact.
+export function replaceAllData(rows: DataDumpRows) {
+  const database = getDB();
+  const insertPlayer = database.prepare(`
+    INSERT INTO Players (id, name, nickname, email, photo_path, is_deleted)
+    VALUES (@id, @name, @nickname, @email, @photo_path, @is_deleted)
+  `);
+  const insertStructure = database.prepare(`
+    INSERT INTO Structures (id, name, starting_chips, data)
+    VALUES (@id, @name, @starting_chips, @data)
+  `);
+  const insertTournament = database.prepare(`
+    INSERT INTO Tournaments (id, name, start_date, end_date, status, state, entry_fee, currency, structure_id, structure_name)
+    VALUES (@id, @name, @start_date, @end_date, @status, @state, @entry_fee, @currency, @structure_id, @structure_name)
+  `);
+  const insertResult = database.prepare(`
+    INSERT INTO TournamentResults (id, tournament_id, player_id, place, playtime_sec, prize, entry_fee)
+    VALUES (@id, @tournament_id, @player_id, @place, @playtime_sec, @prize, @entry_fee)
+  `);
+  const insertSetting = database.prepare('INSERT INTO Settings (key, value) VALUES (@key, @value)');
+
+  database.transaction(() => {
+    // Children first so the TournamentResults FKs never dangle mid-transaction;
+    // parents first on insert for the same reason.
+    database.prepare('DELETE FROM TournamentResults').run();
+    database.prepare('DELETE FROM Tournaments').run();
+    database.prepare('DELETE FROM Players').run();
+    database.prepare('DELETE FROM Structures').run();
+    database.prepare('DELETE FROM Settings').run();
+    for (const p of rows.players) insertPlayer.run(p);
+    for (const s of rows.structures) insertStructure.run(s);
+    for (const t of rows.tournaments) insertTournament.run(t);
+    for (const r of rows.tournamentResults) insertResult.run(r);
+    for (const s of rows.settings) insertSetting.run(s);
+  })();
+}
+
 export function getSettings(): Record<string, string> {
   const rows = getDB().prepare('SELECT key, value FROM Settings').all() as { key: string; value: string }[];
   return Object.fromEntries(rows.map(r => [r.key, r.value]));

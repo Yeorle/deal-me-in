@@ -52,6 +52,7 @@ electron/            Main process (Node context)
   preload.ts         contextBridge: window.api + window.ipcRenderer
   tournament.ts      TournamentManager singleton — all live tournament logic
   db.ts              SQLite open/schema/migrations + every query
+  backup.ts          Full-data backup export/import (.dmibak zip, path rewriting)
 src/                 Renderer (React SPA, no Node access)
   App.tsx            HashRouter routes + sidebar shell
   components/        One file per page/panel/modal (see inventory below)

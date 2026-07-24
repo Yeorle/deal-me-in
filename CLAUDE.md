@@ -65,6 +65,10 @@ Player photos are not stored in SQLite; `db:add-player` / `db:update-player` cop
 
 **State snapshots are PII-sanitized:** `getStateForSave()` persists only `id`/`name`/`nickname`/`photo_path` per player (never `email`). If you add fields to `Player`, decide explicitly whether they belong in `sanitizePlayer()`.
 
+### Backup export/import
+
+`electron/backup.ts` implements the Settings-page backup feature: a `.dmibak` zip containing `manifest.json` (format id + version), `data.json` (dump of all five tables, primary keys preserved) and the `photos/` / `projector/` media files. The DB stores absolute media paths in three places (`Players.photo_path`, embedded players inside `Tournaments.state`, `backgroundImage`/`logoPath` in the `projectorTheme` setting); export rewrites them archive-relative, import rewrites them back under the destination `userData`. Export reads via `getAllRowsForExport()`, which deliberately does **not** filter `is_deleted` — soft-deleted rows must round-trip or result joins break. Import is full-replace: validate the whole archive before any write, save a safety backup to `userData/backups/pre-import-<ts>.dmibak`, extract media (entry names sanitized against zip-slip), swap all rows in one transaction (`replaceAllData()`), then `main.ts` pauses the timer, rehydrates the singleton via `tournamentManager.reloadFromDb()` (which nulls the tournament id *first* so no save() can hit a freshly imported row) and reloads every window. **Do not switch this to `app.relaunch()`** — it strands dev against a dead vite server (vite-plugin-electron exits with the electron process) and is a no-op from an AppImage's unmounted squashfs. If you add a media-path field or a new table, update `relativizeDump`/`absolutizeDump`/`validateDump` and bump/handle `BACKUP_FORMAT_VERSION` accordingly (older versions must always import; newer ones are rejected). The path/dump logic is pure and covered by `tests/backup.test.ts`. Full design: `docs/PRD-data-import-export.md`.
+
 ### Structure data shape (watch the units)
 
 Structures store their levels as JSON in the `data` column — a bare array of level objects (no wrapper). The level objects use `duration` in **minutes**. When a tournament is created (`tournament:create` handler in `main.ts`), the levels are parsed and `duration` is multiplied by 60 — every other piece of code (`TournamentManager`, the timer tick) treats `duration` as **seconds**. If you read or write structure JSON directly, keep the unit in mind.
@@ -98,6 +102,7 @@ Domain methods (use `window.api.*`, defined in `electron/preload.ts`):
 | `bustPlayer / unbustPlayer`                 | `tournament:bust-player` / `unbust-player` | triggers `checkTableHealth`; records/clears `bustElapsed`; both handle unassigned players |
 | `stopTournament`                            | `tournament:stop`                    | archives + resets (no results); invoke so the renderer can await the archive |
 | `openProjector / openStructureEditor`       | `window:open-projector` / `open-structure-editor` | creates a new `BrowserWindow` |
+| `exportData / importData`                   | `data:export` / `data:import`        | full-data backup (see "Backup export/import" below); returns structured `{ ok, error }`, never throws across IPC |
 | `onSeatMoves(callback)`                     | listens on `seat-moves-notification` |                      |
 
 Raw `window.ipcRenderer.send` channels (no `window.api` wrapper):

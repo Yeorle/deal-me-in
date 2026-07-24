@@ -1,9 +1,10 @@
-import { app, BrowserWindow, ipcMain, protocol, net } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, protocol, net } from 'electron'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
 import fs from 'node:fs'
 import { initDB, getPlayers, addPlayer, saveStructure, getStructures, updatePlayer, deletePlayer, getStructure, updateStructure, deleteStructure, getArchivedTournaments, deleteTournament, getRunningTournaments, getSettings, setSetting, getTournamentResults, getPlayerProfile } from './db'
 import { tournamentManager, Player } from './tournament'
+import { exportAllData, importAllData } from './backup'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -186,6 +187,58 @@ app.whenReady().then(() => {
 
   ipcMain.handle('projector:import-image', (_event, { sourcePath }: { sourcePath: string }) => {
     return importFileToUserData(sourcePath, 'projector');
+  })
+
+  // Full-data backup export/import (electron/backup.ts). Errors cross IPC as
+  // structured { ok, error } values — thrown errors get wrapped/mangled by
+  // Electron's IPC serialization.
+  ipcMain.handle('data:export', async (event) => {
+    const senderWin = BrowserWindow.fromWebContents(event.sender)
+    if (!senderWin) return { ok: false, error: 'No window' }
+    const date = new Date().toISOString().slice(0, 10)
+    const result = await dialog.showSaveDialog(senderWin, {
+      defaultPath: `deal-me-in-backup-${date}.dmibak`,
+      filters: [{ name: 'Deal Me In backup', extensions: ['dmibak'] }],
+    })
+    if (result.canceled || !result.filePath) return { ok: true, canceled: true }
+    try {
+      // Flush the live tournament (if any) so the archive captures it as of now.
+      tournamentManager.persist()
+      exportAllData(result.filePath)
+      return { ok: true, path: result.filePath }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('data:import', async (event) => {
+    const senderWin = BrowserWindow.fromWebContents(event.sender)
+    if (!senderWin) return { ok: false, error: 'No window' }
+    const result = await dialog.showOpenDialog(senderWin, {
+      filters: [{ name: 'Deal Me In backup', extensions: ['dmibak', 'zip'] }],
+      properties: ['openFile'],
+    })
+    if (result.canceled || result.filePaths.length === 0) return { ok: true, canceled: true }
+    try {
+      // Stop the live tournament's timer first: a tick between the DB swap and
+      // the reload would save() stale state on top of the imported rows.
+      tournamentManager.pauseTimer()
+      const { safetyBackupPath } = importAllData(result.filePaths[0])
+      // No app.relaunch() here: it strands dev against a dead vite server
+      // (vite-plugin-electron exits with the electron process) and is a no-op
+      // from an AppImage's unmounted squashfs. Instead, rehydrate the
+      // singleton from the imported rows right away, then reload every window
+      // after a short delay so the renderer can show its success notice.
+      tournamentManager.reloadFromDb()
+      setTimeout(() => {
+        for (const w of BrowserWindow.getAllWindows()) {
+          if (!w.isDestroyed()) w.webContents.reload()
+        }
+      }, 1500)
+      return { ok: true, backupPath: safetyBackupPath }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
   })
 
   ipcMain.handle('tournament:bust-player', (_event, playerId) => {

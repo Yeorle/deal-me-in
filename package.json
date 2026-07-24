@@ -15,6 +15,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "adm-zip": "^0.6.0",
     "better-sqlite3": "^12.11.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
@@ -22,6 +23,7 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.4",
+    "@types/adm-zip": "^0.5.8",
     "@types/better-sqlite3": "^7.6.13",
     "@types/react": "^18.2.64",
     "@types/react-dom": "^18.2.21",

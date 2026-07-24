@@ -65,6 +65,8 @@ contextBridge.exposeInMainWorld('api', {
   getSettings: () => ipcRenderer.invoke('db:get-settings'),
   setSetting: (key: string, value: string) => ipcRenderer.invoke('db:set-setting', { key, value }),
   importProjectorImage: (sourcePath: string) => ipcRenderer.invoke('projector:import-image', { sourcePath }),
+  exportData: () => ipcRenderer.invoke('data:export'),
+  importData: () => ipcRenderer.invoke('data:import'),
   // Resolve the absolute filesystem path of a File from an <input type="file">.
   // Replaces the deprecated File.path, which is empty under the renderer sandbox.
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
