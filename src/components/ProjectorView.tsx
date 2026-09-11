@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { TournamentState, Level, Prize } from '../types';
-import { formatEuropeanTime, formatHMS } from '../utils/format';
+import { formatEuropeanTime, formatHMS, formatCurrencyWith } from '../utils/format';
 import { placeLabel } from '../utils/place';
 import { mediaUrl } from '../utils/media';
 import logo from '../assets/logo.png';
@@ -23,10 +23,11 @@ interface TimerState {
     timeUntilNextBreak: number | null;
     elapsedTime: number;
     prizes: Prize[];
+    currency?: string;
 }
 
 const ProjectorView: React.FC = () => {
-    const { t, formatCurrency, projector } = useSettings();
+    const { t, language, currency: settingsCurrency, projector } = useSettings();
     const [timerState, setTimerState] = useState<TimerState>({
         remainingTime: 0,
         level: 1,
@@ -66,12 +67,17 @@ const ProjectorView: React.FC = () => {
                 startingChips: state.startingChips || 0,
                 timeUntilNextBreak: state.timeUntilNextBreak ?? null,
                 elapsedTime: state.elapsedTime ?? 0,
-                prizes: state.prizes ?? []
+                prizes: state.prizes ?? [],
+                currency: state.currency
             });
         };
 
         window.api.getTournamentState().then(s => {
             if (!receivedBroadcast) handleStateUpdate(s);
+        }).catch(e => {
+            // A failed initial fetch must not leave an unhandled rejection (and
+            // the projector permanently blank) — same treatment as ControlPanel.
+            console.error('Failed to load tournament state', e);
         });
 
         const removeListener = window.ipcRenderer.on('timer-update', handleStateUpdate);
@@ -258,7 +264,7 @@ const ProjectorView: React.FC = () => {
                                 <div key={prize.place} className="flex items-baseline justify-between gap-3">
                                     <span className="text-[1.75vw] text-[color:var(--proj-ink-muted)] tabular">{placeLabel(prize.place, t)}</span>
                                     <span className="text-[2.25vw] tabular text-[color:var(--proj-ink)] leading-none">
-                                        {formatCurrency(prize.amount)}
+                                        {formatCurrencyWith(prize.amount, timerState.currency ?? settingsCurrency, language)}
                                     </span>
                                 </div>
                             ))}

@@ -16,7 +16,7 @@ When a tournament is finalized, one row per player is written to the **`Tourname
 
 2. **Finalize** (`FinalizeStandingsModal` → `tournament:finalize`)
    - `getStandings()` returns provisional `StandingRow[]`: survivors (still seated/unassigned) pre-ordered by seating at places `1..n`, busted players at fixed places `n+1..total`.
-   - The operator reorders survivors; `finalize(orderedSurvivorIds)` recomputes places, looks up `prizeForPlace`, and calls `saveTournamentResults`.
+   - The operator reorders survivors; `finalize(orderedSurvivorIds)` recomputes places, looks up `prizeForPlace`, and calls `finalizeTournament` (one transaction writes the result rows **and** archives the row).
    - Survivor playtime = full `elapsedTime`; busted playtime = `bustElapsed[id]`.
    - The alternative is `reset()` (`tournament:stop`) — archives with **no** results.
 
@@ -30,12 +30,12 @@ When a tournament is finalized, one row per player is written to the **`Tourname
 
 - **Earnings are derived, never stored.** Always compute `prize − entry_fee` in the renderer. Don't add an `earnings` column.
 - **Soft-deleted players.** A deleted player's row stays (FK intact) with `name = ''` and `is_deleted = 1`. Any reporting join must tolerate a blank/`NULL` name and render the `common.deletedPlayer` placeholder (`???`). Never make a results query inner-filter on `is_deleted`.
-- **Currency is per-tournament.** `Tournaments.currency` is snapshotted at creation. Format historical money with `formatCurrencyWith(amount, tournament.currency, language)`, not the live `formatCurrency` from settings. (Player-profile aggregates are the documented exception — they sum across tournaments using the current setting.)
+- **Currency is per-tournament.** `Tournaments.currency` is snapshotted at creation (and now also rides on `TournamentState` as `state.currency` for live views). Format historical money with `formatCurrencyWith(amount, tournament.currency, language)`, not the live `formatCurrency` from settings. Player-profile aggregates are grouped per currency (`earnings_by_currency`); the raw `total_earnings` sum is only for sign-color logic.
 - **Place is 1-based**, 1 = winner. Use `placeLabel(place, t)` (`src/utils/place.ts`) for ordinals and `formatDuration(seconds)` for playtime.
 
 ## Adding a new stat or column
 
-- A new **per-result field** → add the column in the `CREATE TABLE` *and* in `migrateSchema()` (existing DBs), populate it in `finalize()` / `saveTournamentResults`, and surface it in the relevant `db.ts` query + renderer page. Mirror any new shape in both `electron/tournament.ts` and `src/types.d.ts` (type-duplication rule).
+- A new **per-result field** → add the column in the `CREATE TABLE` *and* in `migrateSchema()` (existing DBs), populate it in `finalize()` / `finalizeTournament`, and surface it in the relevant `db.ts` query + renderer page. Mirror any new shape in both `electron/tournament.ts` and `src/types.d.ts` (type-duplication rule).
 - A new **aggregate stat** (no schema change) → extend the `SELECT` in `getPlayerProfile()` and the `PlayerProfileData.stats` type, then render it.
 - New IPC for any of this → follow `/add-ipc-channel`.
 

@@ -84,9 +84,13 @@ export interface TournamentState {
     elapsedTime: number; // total seconds the tournament has been running
     prizes: Prize[];
     entryFee?: number;
+    // Currency snapshot taken at tournament creation — live money displays
+    // must use it, not the current settings currency (which can change
+    // mid-tournament and would mislabel the prize panel/projector).
+    currency?: string;
 }
 
-import { getRunningTournament, getTournamentById, createTournament, updateTournamentState, archiveTournament, saveTournamentResults, TournamentMeta } from './db';
+import { getRunningTournament, getTournamentById, createTournament, updateTournamentState, archiveTournament, finalizeTournament, TournamentMeta } from './db';
 
 // Unbiased Fisher–Yates shuffle (returns a new array). Used for every seat
 // draw — `sort(() => Math.random() - 0.5)` is measurably non-uniform.
@@ -124,6 +128,9 @@ export class TournamentManager {
     private elapsedTime: number = 0;
     private prizes: Prize[] = [];
     private entryFee: number = 0;
+    // Currency snapshot (from TournamentMeta at creation); restored rows fall
+    // back to the Tournaments row's own currency column.
+    private currency: string = '';
     // Tournament elapsed time (seconds) at the moment each player busted, keyed
     // by player id. Combined with bustedPlayers[] ordering this gives per-player
     // playtime and finishing place when the tournament is finalized.
@@ -157,6 +164,7 @@ export class TournamentManager {
         this.startingChips = startingChips;
         this.prizes = [...prizes].sort((a, b) => a.place - b.place);
         this.entryFee = meta.entryFee;
+        this.currency = meta.currency;
         this.bustElapsed = {};
         this.unassignedPlayers = [...players]; // Start with all players unassigned
         this.bustedPlayers = [];
@@ -224,7 +232,8 @@ export class TournamentManager {
             elapsedTime: this.elapsedTime,
             prizes: this.prizes,
             entryFee: this.entryFee,
-            bustElapsed: this.bustElapsed
+            bustElapsed: this.bustElapsed,
+            currency: this.currency
         };
     }
 
@@ -287,12 +296,20 @@ export class TournamentManager {
             this.autoBalance = state.autoBalance ?? true;
             this.autoMerge = state.autoMerge ?? true;
             this.shuffleFinalTable = state.shuffleFinalTable ?? false;
-            this.playersPerTable = state.playersPerTable ?? 9;
+            // `??` only catches null/undefined — a corrupt 0 or negative value
+            // would make ensureSeatCapacity add 0-seat tables forever, so
+            // validate like initialize() does.
+            this.playersPerTable = Number.isInteger(state.playersPerTable) && state.playersPerTable > 0
+                ? state.playersPerTable
+                : 9;
             this.startingChips = state.startingChips ?? 0;
             this.elapsedTime = state.elapsedTime ?? 0;
             this.prizes = state.prizes ?? [];
             this.entryFee = state.entryFee ?? 0;
             this.bustElapsed = state.bustElapsed ?? {};
+            // Newer snapshots carry the currency; older ones don't, but the
+            // Tournaments row has had a currency column since it was introduced.
+            this.currency = state.currency ?? saved.currency ?? '';
         } catch (e) {
             console.error('Failed to parse saved tournament state', e);
         }
@@ -336,6 +353,16 @@ export class TournamentManager {
         // the first tick would otherwise immediately hit the final-level
         // branch of tick() and self-pause.
         if (!this.tournamentId) return;
+        // Same for a finished tournament (final level exhausted): every tick
+        // would re-pause but still reconcile wall-clock time into elapsedTime,
+        // silently inflating survivors' recorded playtime while the display
+        // sits frozen at 0. setTimeLeftInLevel can rewind the playhead, which
+        // makes the clock startable again.
+        if (this.levels.length > 0 &&
+            this.currentLevelIndex === this.levels.length - 1 &&
+            this.timeLeftInLevel === 0) {
+            return;
+        }
 
         this.isPaused = false;
         this.anchorTimer();
@@ -403,6 +430,7 @@ export class TournamentManager {
         let newTimeLeft = this.timeLeftAtSegmentStart - elapsedSegment;
 
         // Roll over any levels we've crossed (handles a lagged tick spanning a boundary).
+        let rolledOver = false;
         while (newTimeLeft <= 0) {
             if (this.currentLevelIndex < this.levels.length - 1) {
                 const overshoot = -newTimeLeft;                  // seconds past the boundary
@@ -410,6 +438,7 @@ export class TournamentManager {
                 const dur = this.levels[this.currentLevelIndex].duration;
                 newTimeLeft = dur - overshoot;
                 this.emitSoundCue(this.levels[this.currentLevelIndex].isBreak ? 'break-start' : 'level-start');
+                rolledOver = true;
                 // Re-anchor so the next tick measures from this new level start.
                 this.segmentStartMs = Date.now() - (overshoot * 1000);
                 this.timeLeftAtSegmentStart = dur;
@@ -427,7 +456,9 @@ export class TournamentManager {
         }
 
         // Warning cue: fire when we CROSS the 5s mark (a lagged tick may skip exactly 5).
-        if (prevTimeLeft > 5 && newTimeLeft <= 5) {
+        // Never on the tick that rolled over into a new level — that level just
+        // began, warning about its end 5 seconds in is bogus.
+        if (!rolledOver && prevTimeLeft > 5 && newTimeLeft <= 5) {
             this.emitSoundCue('level-warning');
         }
 
@@ -440,6 +471,9 @@ export class TournamentManager {
     public setTimeLeftInLevel(seconds: number) {
         const cur = this.levels[this.currentLevelIndex];
         if (!cur) return;
+        // NaN would poison timeLeftInLevel (Math.max/min propagate it) and the
+        // saved snapshot until the next level change.
+        if (!Number.isFinite(seconds)) return;
         this.timeLeftInLevel = Math.max(0, Math.min(seconds, cur.duration));
         if (!this.isPaused) this.anchorTimer();
         this.broadcastState();
@@ -488,8 +522,10 @@ export class TournamentManager {
         // Adopt the requested table size globally: every downstream capacity
         // calculation (ensureSeatCapacity, merge, final-table collapse) uses
         // this.playersPerTable, so tables must never be built at a different
-        // size than the one the math assumes.
-        if (playersPerTable && playersPerTable > 0) {
+        // size than the one the math assumes. IPC input is not trusted — a
+        // non-integer value would make doSeatPlayers bail after unassigned
+        // players were already cleared, stranding them outside every list.
+        if (playersPerTable !== undefined && Number.isInteger(playersPerTable) && playersPerTable > 0) {
             this.playersPerTable = playersPerTable;
         }
         const ppt = this.playersPerTable;
@@ -616,7 +652,11 @@ export class TournamentManager {
         // Update counts. totalEntries must NOT be reset here: players can be
         // busted while still unassigned (before the first seating), and the
         // entry count is a persisted, displayed stat that includes them.
-        this.playersRemaining = this.totalEntries - this.bustedPlayers.length;
+        // playersRemaining is every live player: the input array contains all
+        // of them at this point (tables.length === 0 means nobody is seated),
+        // so counting the input is exact even after removePlayerFromTournament
+        // dropped someone (totalEntries - bustedPlayers.length would re-inflate).
+        this.playersRemaining = shuffledPlayers.length;
 
         this.save();
         this.broadcastState();
@@ -746,6 +786,13 @@ export class TournamentManager {
 // Add empty tables until every unassigned player has a seat available.
     private ensureSeatCapacity() {
         if (this.tables.length === 0) return;
+        // A degenerate playersPerTable would add 0-seat tables forever here
+        // (the loop below never gains empty seats). Defense in depth on top
+        // of the hydration clamp in applySavedRow().
+        if (!Number.isInteger(this.playersPerTable) || this.playersPerTable < 1) {
+            console.error('ensureSeatCapacity: invalid playersPerTable', this.playersPerTable);
+            return;
+        }
         let emptySeats = this.tables.reduce((n, t) => n + t.seats.filter(s => !s.player).length, 0);
         while (emptySeats < this.unassignedPlayers.length) {
             const tableNumber = Math.max(...this.tables.map(t => t.tableNumber)) + 1;
@@ -784,8 +831,14 @@ export class TournamentManager {
 
         // -- AUTO MERGE CHECK --
         if (this.autoMerge && this.tables.length > 1) {
-            // Can we fit everyone into N-1 tables?
-            const possibleCapacity = (this.tables.length - 1) * this.playersPerTable;
+            // Can we fit everyone into N-1 tables? mergeTables() removes the
+            // LAST table and redistributes into the others, so capacity must
+            // come from those tables' actual seat counts — assuming
+            // playersPerTable breaks when tables were built at a different
+            // size (e.g. randomizeSeating adopted a new size mid-tournament).
+            const possibleCapacity = this.tables
+                .slice(0, -1)
+                .reduce((n, t) => n + t.seats.length, 0);
             if (totalActive <= possibleCapacity) {
                 this.mergeTables();
                 return; // Merging effectively rebalances, so return
@@ -1013,7 +1066,8 @@ export class TournamentManager {
             timeUntilNextBreak: this.computeTimeUntilNextBreak(),
             elapsedTime: this.elapsedTime,
             prizes: this.prizes,
-            entryFee: this.entryFee
+            entryFee: this.entryFee,
+            currency: this.currency
         };
     }
 
@@ -1112,8 +1166,9 @@ export class TournamentManager {
         });
 
         const archivedId = this.tournamentId;
-        saveTournamentResults(archivedId, results.filter(r => r.player_id != null));
-        archiveTournament(archivedId);
+        // One transaction: results + archive must not be separable (a crash
+        // in between would resume a "finished" tournament on next launch).
+        finalizeTournament(archivedId, results.filter(r => r.player_id != null));
         this.tournamentId = null;
         this.clearInMemory();
         this.broadcastState();
@@ -1140,6 +1195,7 @@ export class TournamentManager {
         this.elapsedTime = 0;
         this.prizes = [];
         this.entryFee = 0;
+        this.currency = '';
         this.bustElapsed = {};
     }
 

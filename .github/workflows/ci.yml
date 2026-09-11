@@ -19,5 +19,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
-      - run: npx tsc --noEmit
+      # The plain `tsc` run ignores project references, so the Vite config
+      # files (tsconfig.node.json) need their own typecheck pass.
+      - run: npx tsc --noEmit && npx tsc -p tsconfig.node.json --noEmit
       - run: npm run test

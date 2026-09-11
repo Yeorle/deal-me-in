@@ -97,11 +97,19 @@ function rewriteProjectorThemePaths(value: string, rewrite: PathRewrite): string
 // Deduped by absolute path; a basename collision between distinct files gets a
 // uniquifying prefix (can't happen with importFileToUserData names, but a
 // backup must never silently pack the wrong file).
-export function relativizeDump(rows: DataDumpRows): { dump: DataDumpRows; files: MediaFileRef[] } {
+// When userDataDir is given, register() refuses to pack anything outside
+// <userDataDir>/<folder> — export must never turn an arbitrary readable file
+// on disk into part of the shareable archive (defense in depth: today only
+// importFileToUserData writes these paths, but nothing else enforces it).
+export function relativizeDump(rows: DataDumpRows, userDataDir?: string): { dump: DataDumpRows; files: MediaFileRef[] } {
   const dump = structuredClone(rows);
   const byAbsPath = new Map<string, string>();
   const usedZipPaths = new Set<string>();
   const register = (absPath: string, folder: 'photos' | 'projector'): string => {
+    if (userDataDir) {
+      const root = path.join(userDataDir, folder) + path.sep;
+      if (!absPath.startsWith(root)) return absPath;
+    }
     const existing = byAbsPath.get(absPath);
     if (existing) return existing;
     let zipPath = `${folder}/${path.basename(absPath)}`;
@@ -135,8 +143,14 @@ const ARCHIVE_RELATIVE = /^(photos|projector)\/[^/\\]+$/;
 // Values that don't match the archive convention are left untouched.
 export function absolutizeDump(dump: DataDumpRows, userDataDir: string): DataDumpRows {
   const out = structuredClone(dump);
-  const toAbs: PathRewrite = (value) =>
-    ARCHIVE_RELATIVE.test(value) ? path.join(userDataDir, ...value.split('/')) : null;
+  const toAbs: PathRewrite = (value) => {
+    if (!ARCHIVE_RELATIVE.test(value)) return null;
+    // `[^/\\]+` matches the literal ".." — reject dot segments so a
+    // hand-crafted "photos/.." can't resolve to userData itself.
+    const parts = value.split('/');
+    if (parts.some(seg => seg === '.' || seg === '..')) return null;
+    return path.join(userDataDir, ...parts);
+  };
 
   for (const p of out.players) {
     if (p.photo_path) {
@@ -189,6 +203,12 @@ function num(v: unknown, dflt: number): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : dflt;
 }
 
+// For INTEGER columns (place, playtime_sec, starting_chips): SQLite stores
+// 1.5 in an INTEGER-affinity column as REAL — reject fractions like reqId does.
+function numInt(v: unknown, dflt: number): number {
+  return typeof v === 'number' && Number.isInteger(v) ? v : dflt;
+}
+
 function numOrNull(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
@@ -234,7 +254,7 @@ export function validateDump(json: unknown): DataDumpRows {
   const structures = (d.structures as Raw[]).map((s): StructureExportRow => ({
     id: reqId(s.id, 'structures'),
     name: str(s.name, ''),
-    starting_chips: num(s.starting_chips, 0),
+    starting_chips: numInt(s.starting_chips, 0),
     data: strOrNull(s.data),
   }));
   const tournaments = (d.tournaments as Raw[]).map((t): TournamentExportRow => ({
@@ -253,8 +273,8 @@ export function validateDump(json: unknown): DataDumpRows {
     id: reqId(r.id, 'tournamentResults'),
     tournament_id: reqId(r.tournament_id, 'tournamentResults'),
     player_id: reqId(r.player_id, 'tournamentResults'),
-    place: num(r.place, 0),
-    playtime_sec: num(r.playtime_sec, 0),
+    place: numInt(r.place, 0),
+    playtime_sec: numInt(r.playtime_sec, 0),
     prize: num(r.prize, 0),
     entry_fee: num(r.entry_fee, 0),
   }));
@@ -310,6 +330,16 @@ export function validateReferentialIntegrity(dump: DataDumpRows): void {
     }
     seenPairs.add(pair);
   }
+
+  // Tournaments.structure_id has no FK in the schema, so a dangling
+  // value would import fine but leave the tournament un-resumable (its
+  // structure can't be re-opened). Validate it like the enforced references.
+  const structureIds = new Set(dump.structures.map(s => s.id));
+  for (const t of dump.tournaments) {
+    if (t.structure_id != null && !structureIds.has(t.structure_id)) {
+      throw new Error(`Invalid backup: tournament ${t.id} references missing structure ${t.structure_id}.`);
+    }
+  }
 }
 
 // Only flat entries directly inside photos/ or projector/ are extractable —
@@ -325,9 +355,11 @@ export function sanitizeZipEntryName(entryName: string): { folder: 'photos' | 'p
 // ---------------------------------------------------------------------------
 // IO — main process only.
 
-export function exportAllData(targetFilePath: string): void {
+export function exportAllData(targetFilePath: string, userDataDir?: string): void {
   const rows = getAllRowsForExport();
-  const { dump, files } = relativizeDump(rows);
+  // Explicit root (or the app userData) so export only ever packs files the
+  // app manages — never an arbitrary path that happens to sit in the DB.
+  const { dump, files } = relativizeDump(rows, userDataDir ?? app.getPath('userData'));
   const manifest = buildManifest(dump, app.getVersion());
 
   const zip = new AdmZip();

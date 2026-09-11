@@ -3,7 +3,7 @@ import { Level, Player, Prize, Table, TournamentState } from '../types';
 import TournamentCreator from './TournamentCreator';
 import ManagePlayersPanel from './ManagePlayersPanel';
 import FinalizeStandingsModal from './FinalizeStandingsModal';
-import { formatEuropeanDateTime, formatDuration, formatClock } from '../utils/format';
+import { formatEuropeanDateTime, formatDuration, formatClock, formatCurrencyWith } from '../utils/format';
 import { placeLabel } from '../utils/place';
 import { useSettings } from '../i18n/useSettings';
 
@@ -25,6 +25,7 @@ interface TimerState {
     currentLevelIndex: number;
     elapsedTime: number;
     prizes?: Prize[];
+    currency?: string;
 }
 
 type ActiveMenu = 'players' | 'structure' | 'prizes';
@@ -84,7 +85,8 @@ const ControlPanel: React.FC = () => {
                 levels: state.levels,
                 currentLevelIndex: state.currentLevelIndex,
                 elapsedTime: state.elapsedTime,
-                prizes: state.prizes
+                prizes: state.prizes,
+                currency: state.currency
             });
         };
 
@@ -133,8 +135,12 @@ const ControlPanel: React.FC = () => {
     };
 
     const loadRunningTournaments = async () => {
-        const running = await window.api.getRunningTournaments();
-        setRunningTournaments(running);
+        try {
+            const running = await window.api.getRunningTournaments();
+            setRunningTournaments(running);
+        } catch (e) {
+            console.error('Failed to load running tournaments', e);
+        }
     }
 
     const handleSwitchTournament = async (id: number) => {
@@ -309,7 +315,7 @@ const ControlPanel: React.FC = () => {
                                 <StructureView levels={timerState.levels || []} currentLevelIndex={timerState.currentLevelIndex} />
                             )}
                             {activeMenu === 'prizes' && (
-                                <PrizesView prizes={timerState.prizes || []} />
+                                <PrizesView prizes={timerState.prizes || []} currency={timerState.currency} />
                             )}
                         </section>
                     </div>
@@ -320,7 +326,11 @@ const ControlPanel: React.FC = () => {
                     </div>
                 )}
 
-                {runningTournaments.filter(rt => rt.id !== timerState.id).length > 0 && (
+                // Before the first broadcast/fetch lands, timerState.id is undefined —
+                // without this gate the live tournament itself would appear
+                // under "Other running tournaments" and switching to it would
+                // needlessly pause its clock.
+                {timerState.id != null && runningTournaments.filter(rt => rt.id !== timerState.id).length > 0 && (
                     <div className="mt-4 bg-surface border border-line rounded overflow-hidden">
                         <div className="px-5 py-3 border-b border-line text-micro uppercase text-ink-muted">
                             {t('controlPanel.otherRunning')}
@@ -433,8 +443,8 @@ const StructureView: React.FC<{ levels: Level[]; currentLevelIndex: number }> = 
     );
 };
 
-const PrizesView: React.FC<{ prizes: Prize[] }> = ({ prizes }) => {
-    const { t, formatCurrency } = useSettings();
+const PrizesView: React.FC<{ prizes: Prize[]; currency?: string }> = ({ prizes, currency }) => {
+    const { t, language, currency: settingsCurrency } = useSettings();
 
     const sorted = [...prizes].filter(p => p.amount > 0).sort((a, b) => a.place - b.place);
     const total = sorted.reduce((sum, p) => sum + p.amount, 0);
@@ -447,19 +457,23 @@ const PrizesView: React.FC<{ prizes: Prize[] }> = ({ prizes }) => {
         );
     }
 
+    // The tournament's currency snapshot wins over the current setting —
+    // changing Settings mid-tournament must not relabel its prize pool.
+    const money = (n: number) => formatCurrencyWith(n, currency ?? settingsCurrency, language);
+
     return (
         <div className="border border-line rounded overflow-hidden">
             <ul className="divide-y divide-line">
                 {sorted.map(prize => (
                     <li key={prize.place} className="flex items-center justify-between px-5 py-3">
                         <span className="text-sm text-ink-muted">{placeLabel(prize.place, t)}</span>
-                        <span className="text-sm text-ink font-medium tabular">{formatCurrency(prize.amount)}</span>
+                        <span className="text-sm text-ink font-medium tabular">{money(prize.amount)}</span>
                     </li>
                 ))}
             </ul>
             <div className="flex items-center justify-between px-5 py-3 border-t border-line bg-surface-raised">
                 <span className="text-micro uppercase text-ink-muted">{t('creator.total')}</span>
-                <span className="text-sm text-ink font-medium tabular">{formatCurrency(total)}</span>
+                <span className="text-sm text-ink font-medium tabular">{money(total)}</span>
             </div>
         </div>
     );

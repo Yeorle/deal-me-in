@@ -1,6 +1,9 @@
 {
   "compilerOptions": {
-    "composite": true,
+    // Typecheck-only (run as `tsc -p tsconfig.node.json --noEmit`): composite
+    // projects are emit-capable, and `tsc -b` would litter the repo root with
+    // compiled vite.config.js/.d.ts.
+    "noEmit": true,
     "skipLibCheck": true,
     "module": "ESNext",
     "moduleResolution": "bundler",

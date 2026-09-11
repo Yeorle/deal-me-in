@@ -172,6 +172,15 @@ describe('absolutizeDump', () => {
         const restored = absolutizeDump(dump, DST);
         expect(restored.players[0].photo_path).toBe('/already/absolute.jpg');
     });
+
+    it('does not let dot segments escape the destination root', () => {
+        // `photos/..` matches the archive convention but must not resolve to
+        // userData itself.
+        const rows = makeRows();
+        rows.players[0].photo_path = 'photos/..';
+        const restored = absolutizeDump(rows, DST);
+        expect(restored.players[0].photo_path).toBe('photos/..');
+    });
 });
 
 describe('manifest', () => {
@@ -232,6 +241,21 @@ describe('validateDump', () => {
         expect(() => validateDump({ ...base, players: [{ name: 'NoId' }] })).toThrow(/invalid id/);
         expect(() => validateDump({ ...base, tournamentResults: [{ id: 1, player_id: 1 }] })).toThrow(/invalid id/);
     });
+
+    it('coerces fractional values out of INTEGER columns', () => {
+        // SQLite stores 1.5 in an INTEGER-affinity column as REAL — fractions
+        // must not reach place/playtime_sec/starting_chips.
+        const dump = validateDump({
+            players: [{ id: 1, name: 'A' }],
+            structures: [{ id: 1, name: 'S', starting_chips: 1.5 }],
+            tournaments: [{ id: 1, name: 'T', status: 'archived' }],
+            tournamentResults: [{ id: 1, tournament_id: 1, player_id: 1, place: 1.5, playtime_sec: 3.7 }],
+            settings: [],
+        });
+        expect(dump.structures[0].starting_chips).toBe(0);
+        expect(dump.tournamentResults[0].place).toBe(0);
+        expect(dump.tournamentResults[0].playtime_sec).toBe(0);
+    });
 });
 
 describe('validateReferentialIntegrity', () => {
@@ -262,6 +286,36 @@ describe('validateReferentialIntegrity', () => {
         const { dump: d3 } = relativizeDump(makeRows());
         d3.tournamentResults.push({ ...d3.tournamentResults[0], id: 2 });
         expect(() => validateReferentialIntegrity(d3)).toThrow(/duplicate result rows/);
+    });
+
+    it('rejects a tournament referencing a missing structure', () => {
+        // structure_id has no FK in the schema, so replaceAllData would import
+        // the dangling value silently — validation must catch it.
+        const { dump } = relativizeDump(makeRows());
+        dump.tournaments[0].structure_id = 99;
+        expect(() => validateReferentialIntegrity(dump)).toThrow(/missing structure/);
+
+        // A NULL structure_id (or an existing one) stays acceptable.
+        const { dump: d2 } = relativizeDump(makeRows());
+        d2.tournaments[0].structure_id = null;
+        expect(() => validateReferentialIntegrity(d2)).not.toThrow();
+    });
+});
+
+describe('relativizeDump guard', () => {
+    it('refuses to pack media outside the given userData root', () => {
+        const rows = makeRows(SRC);
+        rows.players.push({
+            id: 4, name: 'Eve', nickname: null, email: null,
+            photo_path: '/home/other/secrets.txt', is_deleted: 0,
+        });
+        const { dump, files } = relativizeDump(rows, SRC);
+
+        // In-root files are rewritten and packed; the out-of-root path is
+        // left untouched and never added to the archive manifest.
+        expect(dump.players[0].photo_path).toBe('photos/111-aaa.jpg');
+        expect(dump.players[3].photo_path).toBe('/home/other/secrets.txt');
+        expect(files.map(f => f.zipPath)).not.toContain('photos/secrets.txt');
     });
 });
 
@@ -308,7 +362,9 @@ describe('exportAllData / importAllData round-trip', () => {
     });
 
     it('writes an archive that imports on a different userData with rewritten paths', () => {
-        exportAllData(archivePath);
+        // Export runs against srcDir's userData (the source of the rows);
+        // import targets dstDir — the mocked app.getPath('userData').
+        exportAllData(archivePath, srcDir);
         expect(fs.existsSync(archivePath)).toBe(true);
         expect(fs.existsSync(archivePath + '.tmp')).toBe(false);
 
@@ -330,7 +386,7 @@ describe('exportAllData / importAllData round-trip', () => {
 
     it('skips dangling media paths instead of aborting the export', () => {
         fs.unlinkSync(path.join(srcDir, 'photos', '222-bbb.png'));
-        expect(() => exportAllData(archivePath)).not.toThrow();
+        expect(() => exportAllData(archivePath, srcDir)).not.toThrow();
         expect(() => importAllData(archivePath)).not.toThrow();
         expect(fs.existsSync(path.join(dstDir, 'photos', '111-aaa.jpg'))).toBe(true);
         expect(fs.existsSync(path.join(dstDir, 'photos', '222-bbb.png'))).toBe(false);
@@ -344,7 +400,7 @@ describe('exportAllData / importAllData round-trip', () => {
     });
 
     it('rejects an archive from a newer format version before any write', () => {
-        exportAllData(archivePath);
+        exportAllData(archivePath, srcDir);
         // Rewrite the manifest in place to claim a future version.
         const zip = new AdmZip(archivePath);
         const manifest = JSON.parse(zip.readAsText('manifest.json'));
@@ -358,7 +414,7 @@ describe('exportAllData / importAllData round-trip', () => {
     });
 
     it('rejects a referentially-broken dump before overwriting any media file', () => {
-        exportAllData(archivePath);
+        exportAllData(archivePath, srcDir);
         // Hand-edit data.json: a result referencing a player that does not
         // exist. replaceAllData would throw on the FK — validation must catch
         // it BEFORE the media extraction would clobber existing files.

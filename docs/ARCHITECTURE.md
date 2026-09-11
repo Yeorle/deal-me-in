@@ -165,7 +165,7 @@ column added after first release must also appear in `migrateSchema()`. Changes 
 `applySavedRow()` (the `/edit-tournament-state` skill walks through this).
 
 All query functions are thin, synchronous prepared statements. Multi-statement writes
-(`saveTournamentResults`) run inside `db.transaction()`.
+(`finalizeTournament`, `replaceAllData`) run inside `db.transaction()`.
 
 ### The IPC surface (`main.ts` + `preload.ts`)
 
@@ -324,5 +324,5 @@ Sound cues are bundled mp3s in `src/assets/sounds/`, played only in the primary 
 - `npm run dev` — Vite dev server + Electron with HMR for both processes.
 - `npm run build` — `tsc` (typecheck only) → `vite build` (renderer to `dist/`, main/preload to `dist-electron/` via `vite-plugin-electron`) → `electron-builder` (config in `electron-builder.json5`; artifacts under `release/<version>/`, git-ignored).
 - `npm run lint` — ESLint over the repo with `--max-warnings 0`.
-- **`better-sqlite3` is a native module**: it is declared `external` in the main-process Rollup options (`vite.config.ts`) and rebuilt against Electron's ABI by `@electron/rebuild`. Do not try to bundle it.
+- **`better-sqlite3` is a native module**: it is declared `external` in the main-process Rollup options (`vite.config.ts`) and rebuilt against Electron's ABI by electron-builder's own `npmRebuild` step during packaging. Do not try to bundle it.
 - The two TypeScript "projects" (`tsconfig.json` includes both `src/` and `electron/`; `tsconfig.node.json` covers the Vite config files) are why type declarations are duplicated across the process boundary — when changing a shared shape, update **both** `electron/tournament.ts` and `src/types.d.ts` (the `/edit-tournament-state` skill enforces this).

@@ -85,11 +85,138 @@ this round:
 
 Known-accepted items (deliberately not changed): the finalize modal's standings
 can go stale if a player is busted from another window while it is open (the
-engine's unknown-id fallback makes this safe, order-only); the live prize view
-formats with the current app currency while finalize/history use the creation
-snapshot (adding the snapshot to `TournamentState` was judged not worth the
-cross-process type churn); the projector renders a zeroed board instead of a
+engine's unknown-id fallback makes this safe, order-only); ~~the live prize view
+formats with the current app currency~~ (fixed in round 4 — the currency snapshot
+now rides on `TournamentState`); the projector renders a zeroed board instead of a
 dedicated idle screen when no tournament is active.
+
+---
+
+## Round 4 review (2026-09-11)
+
+A fourth full pass, run as four parallel deep-dives (tournament engine;
+db/backup/main/preload + vite config; renderer; tests/build/config/docs/type-drift)
+over the post-round-3 code. Baseline was green (`tsc`, lint, 54 tests). Findings
+below are all new; nothing from rounds 1–3 regressed. Fixed in this round (tests
+grew 54 → 66; every engine fix has a regression test):
+
+### Engine (`electron/tournament.ts`)
+
+- **`randomizeSeating` could strand every player** — it adopted any
+  `playersPerTable > 0` (e.g. `4.5` via the unvalidated IPC channel), then cleared
+  `unassignedPlayers` before `doSeatPlayers`' integer guard bailed: players
+  vanished from seats/unassigned/busted and would get **no result row at
+  finalize**. The requested size is now integer-validated like `initialize()`.
+- **`ensureSeatCapacity` could hang the main process** — a corrupt snapshot with
+  `playersPerTable: 0` (or negative) hydrated via `??` (which only catches
+  null/undefined) and the seat-opening loop never gained seats. Fixed at
+  hydration (clamped to 9) plus a defensive guard in the loop itself.
+- **Auto-merge capacity was seat-count fiction after a mid-tournament size
+  change** — capacity was `(N-1) × playersPerTable`, but old tables keep their
+  old seat counts once `randomizeSeating(n)` adopts a new size; a merge could
+  strand up to N-1 players in the CRITICAL fallback. Capacity now comes from
+  the actual seat count of the tables that survive the merge.
+- **`doSeatPlayers` recounted `playersRemaining` as `totalEntries - busted`**,
+  re-inflating the count after `removePlayerFromTournament` dropped a live
+  player. Now counted from the seating input (exact, since tables are empty in
+  that path).
+- **Finished tournament could restart silently** — a stray `start-timer` after
+  the final level auto-paused re-paused on the first tick but still reconciled
+  wall-clock time into `elapsedTime`, inflating survivors' recorded playtime.
+  `startTimer` is now a no-op in that state (`setTimeLeftInLevel` re-enables it).
+- **Bogus `level-warning` 5s after a level began** — a lagged boundary tick
+  fired both `level-start` and the warning; rollover ticks are now excluded.
+- **`setTimeLeftInLevel(NaN)` poisoned the clock and the saved snapshot** —
+  guarded with `Number.isFinite`.
+- **Un-bust left the stale `bustElapsed` entry** — a re-bust would report the
+  old playtime instead of the fresh one.
+
+### Persistence & money
+
+- **Per-tournament currency snapshot finally honored everywhere** —
+  `PlayerProfile` (and the live ControlPanel prizes / projector / finalize modal)
+  formatted historical money with the *current* settings currency, retroactively
+  relabeling tournaments after a currency change. `TournamentState` now carries
+  the creation-time `currency` (persisted + restored with a row fallback),
+  `getPlayerProfile` returns `t.currency` per history row plus an
+  `earnings_by_currency` aggregate, and all money surfaces format per-row.
+- **`finalize()` is atomic** — results insert + archive now run in a single
+  `db.transaction` (`finalizeTournament()`); a crash in between previously left
+  a `running` tournament with result rows that would resume on next launch.
+- **Demo seeding no longer resurrects after an intentional empty-backup
+  import** — seeding only runs when the DB file is brand-new, not whenever
+  tables happen to be empty.
+- **`db:add-player` no longer orphans an imported photo** when the INSERT
+  throws (matches `db:update-player`'s cleanup).
+- **Backup hardening** — export refuses to pack media from outside
+  `userData/photos|projector` (`relativizeDump` takes the userData root);
+  `absolutizeDump` rejects dot segments (`photos/..` → userData);
+  `validateReferentialIntegrity` catches a dangling `Tournaments.structure_id`
+  (no FK in the schema, so it would otherwise import silently); fractional
+  values can't reach INTEGER columns (`place`, `playtime_sec`, `starting_chips`).
+- **The 1.5 s post-import window is input-frozen** — the old renderer stayed
+  fully interactive between `reloadFromDb()` and the window reload; a stray
+  Bust/Stop click could mutate the freshly imported tournament. All windows are
+  disabled until the reload lands.
+- **NaN from `tournament:set-time-left`** — see engine guard above.
+
+### Renderer
+
+- **ControlPanel** — before the first broadcast, the live tournament itself
+  appeared under "Other running tournaments" (a Switch-to click needlessly
+  paused its clock): the section is gated on a known active id. Failed
+  `getRunningTournaments` calls no longer produce unhandled rejections.
+- **ProjectorView** — the initial `getTournamentState()` fetch has a `.catch`
+  (an IPC failure left a permanently blank projector + unhandled rejection).
+- **StructureEditor** — levels lacking `ante` (older structures /
+  `JSON.stringify` drops the key) rendered an uncontrolled number input; rows
+  are normalized on load and copied with `?? 0`.
+
+### Config, deps, docs
+
+- **`@electron/rebuild` devDependency removed** — nothing invoked it;
+  electron-builder does the native rebuild itself via its own `npmRebuild`
+  (and brings its own `@electron/rebuild`). Doc attribution corrected
+  (ARCHITECTURE.md; README/CONTRIBUTING already said "packaging").
+- **The Vite configs are now actually typechecked** — plain `tsc` ignores
+  project references, so `vite.config.ts`/`vitest.config.ts` were compiled by
+  nothing. `npm run build` and CI both run
+  `tsc -p tsconfig.node.json --noEmit`; `tsconfig.node.json` dropped
+  `composite` (emit-capable, and `tsc -b` littered the repo root with compiled
+  configs) and the dangling `references` entry was removed.
+- **Backup import freezes stale renderers** (see above); minor `App.tsx`
+  route-check redundancy and the USER_GUIDE "Manage Players window" wording
+  fixed.
+- **Dead `getPlayer()` removed** — the only DB accessor returning soft-deleted
+  rows; unused, and a footgun next to the documented soft-delete contract.
+
+### Tests added (54 → 66)
+
+Non-integer `randomizeSeating` input; corrupt `playersPerTable` hydration (hang
+repro); mixed-size merge capacity (mid-tournament size change); removal-aware
+`playersRemaining` recount; no-restart-after-final-level; `bustElapsed` cleanup
+on un-bust; un-busted-player removal (no double decrement); `seatPlayer` refusal
+paths; backup dot-segment rejection, INTEGER-column fraction coercion, dangling
+`structure_id`, out-of-root media packing guard.
+
+### Known-accepted / remaining gaps (not fixed, by design)
+
+- **`electron/db.ts` has no automated coverage and can't under Vitest** — the
+  workspace's `better-sqlite3` is rebuilt to Electron's ABI, so it cannot load
+  under plain Node (that is also why `vitest.config.ts` exists standalone). The
+  pure backup path/JSON layer is tested; the SQLite layer (soft delete, scrub,
+  export-includes-deleted-rows) is only manually verified. A Node-ABI test
+  install would be needed to close this.
+- **`relativizeDump`'s Windows nit** — zip basenames with `:` or reserved device
+  names (CON, NUL…) fail the extraction write harmlessly; NTFS alternate-data
+  streams are not blocked. Windows-only, cosmetic impact.
+- **Type for the persisted state snapshot** — `getStateForSave()`'s shape
+  (incl. `bustElapsed`, `playersPerTable`, `currency`) is still untyped; the
+  dual `TournamentState` declarations don't cover it. A `PersistedTournamentState`
+  interface would close the one blind spot in the dual-declaration convention.
+- Zip-slip is unit-covered at `sanitizeZipEntryName` but not exercised
+  end-to-end through `importAllData` (the extraction loop is the only
+  incidental integration).
 
 ---
 
