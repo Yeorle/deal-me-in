@@ -1,4 +1,10 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap');
+/* DM Sans is self-hosted via @fontsource — the Google-Fonts CDN import used to
+   be blocked by the packaged CSP (style-src/font-src 'self'), silently falling
+   back to system-ui in production builds. */
+@import '@fontsource/dm-sans/400.css';
+@import '@fontsource/dm-sans/500.css';
+@import '@fontsource/dm-sans/600.css';
+@import '@fontsource/dm-sans/700.css';
 
 @tailwind base;
 @tailwind components;

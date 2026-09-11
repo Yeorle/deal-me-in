@@ -24,6 +24,12 @@ const FinalizeStandingsModal: React.FC<FinalizeStandingsModalProps> = ({ isOpen,
     useEffect(() => {
         if (!isOpen) return;
         let cancelled = false;
+        // The clock keeps ticking while the operator reorders survivors, so
+        // the displayed playtimes (and the survivor set, with multiple control
+        // windows open) would drift from what finalize actually records. Pause
+        // it while the modal is open and restore it on cancel — finalize/stop
+        // leave the clock stopped anyway, in which case the resume is a no-op.
+        let wasRunning = false;
         const load = async () => {
             const [rows, state] = await Promise.all([
                 window.api.getStandings(),
@@ -35,8 +41,26 @@ const FinalizeStandingsModal: React.FC<FinalizeStandingsModalProps> = ({ isOpen,
             setPrizes(state.prizes || []);
             setEntryFee(state.entryFee || 0);
         };
-        load();
-        return () => { cancelled = true; };
+        const open = async () => {
+            try {
+                const state = await window.api.getTournamentState();
+                if (cancelled) return;
+                wasRunning = state.isActive && !state.isPaused;
+                if (wasRunning) window.ipcRenderer.send('pause-timer');
+            } catch (e) {
+                console.error('Failed to fetch tournament state', e);
+            }
+            try {
+                await load();
+            } catch (e) {
+                console.error('Failed to load standings', e);
+            }
+        };
+        open();
+        return () => {
+            cancelled = true;
+            if (wasRunning) window.ipcRenderer.send('start-timer');
+        };
     }, [isOpen]);
 
     if (!isOpen) return null;

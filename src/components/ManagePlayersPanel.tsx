@@ -54,18 +54,32 @@ const ManagePlayersPanel: React.FC<ManagePlayersPanelProps> = ({ tables, unassig
     };
 
     const confirmBust = async () => {
-        if (bustTarget?.id != null) {
-            await window.api.bustPlayer(bustTarget.id);
+        try {
+            if (bustTarget?.id != null) {
+                await window.api.bustPlayer(bustTarget.id);
+            }
+        } catch (e) {
+            console.error('Failed to bust player', e);
+        } finally {
+            // The modal must close even if the IPC call rejects.
+            setBustTarget(null);
         }
-        setBustTarget(null);
     };
 
     const handleUnbust = async (playerId: number) => {
-        await window.api.unbustPlayer(playerId);
+        try {
+            await window.api.unbustPlayer(playerId);
+        } catch (e) {
+            console.error('Failed to un-bust player', e);
+        }
     };
 
     const handleRandomizeSeating = async () => {
-        await window.api.randomizeSeating();
+        try {
+            await window.api.randomizeSeating();
+        } catch (e) {
+            console.error('Failed to randomize seating', e);
+        }
     };
 
     const handleDragStart = (e: React.DragEvent, playerId: number) => {
@@ -98,7 +112,11 @@ const ManagePlayersPanel: React.FC<ManagePlayersPanelProps> = ({ tables, unassig
         setDragOverSeat(null);
         setDraggingPlayerId(null);
         if (!playerId) return;
-        await window.api.seatPlayer(playerId, tableNumber, seatNumber);
+        try {
+            await window.api.seatPlayer(playerId, tableNumber, seatNumber);
+        } catch (e) {
+            console.error('Failed to seat player', e);
+        }
     };
 
     return (

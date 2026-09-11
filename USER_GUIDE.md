@@ -149,3 +149,10 @@ Under **Settings** you can change:
 - **Currency** — how prize amounts are formatted (EUR / USD / GBP / CHF). The currency is recorded with each tournament when it's created, so past results keep the currency they were played in.
 
 Changes apply immediately to every open window.
+
+### Backing up your data
+
+- **Export backup** saves a single `.dmibak` file containing all players, tournaments, structures, results, settings and photos.
+- **Import backup** restores a backup file. Everything currently in the app is replaced; a safety backup of the pre-import data is saved to the `backups` folder inside the app's data directory first.
+
+Backups contain player names, emails and photos unencrypted — store them accordingly.

@@ -30,7 +30,7 @@ gotchas, see [CLAUDE.md](../CLAUDE.md).
 
 | Concern | Choice |
 | --- | --- |
-| Desktop shell | Electron 30 |
+| Desktop shell | Electron 43 |
 | UI | React 18 + React Router 7 (`HashRouter`) |
 | Language | TypeScript (two projects: `electron/` and `src/`) |
 | Build / dev | Vite 5 + `vite-plugin-electron` (`npm run dev` is the only dev command) |
@@ -41,8 +41,9 @@ gotchas, see [CLAUDE.md](../CLAUDE.md).
 Unit tests run with **Vitest** (`npm run test`): `tests/tournament.test.ts` covers the
 tournament engine (seating, bust/unbust, merge/balance/final-table, standings,
 finalize) with `electron` and `electron/db` mocked. `vitest.config.ts` is deliberately
-standalone so the electron Vite plugins are not loaded during tests. There is no CI
-configured.
+standalone so the electron Vite plugins are not loaded during tests. CI (GitHub
+Actions, `.github/workflows/ci.yml`) runs lint, typecheck and the Vitest suite on
+every push.
 
 ## Repository layout
 
@@ -324,4 +325,4 @@ Sound cues are bundled mp3s in `src/assets/sounds/`, played only in the primary 
 - `npm run build` — `tsc` (typecheck only) → `vite build` (renderer to `dist/`, main/preload to `dist-electron/` via `vite-plugin-electron`) → `electron-builder` (config in `electron-builder.json5`; artifacts under `release/<version>/`, git-ignored).
 - `npm run lint` — ESLint over the repo with `--max-warnings 0`.
 - **`better-sqlite3` is a native module**: it is declared `external` in the main-process Rollup options ([vite.config.ts:17](../vite.config.ts#L17)) and rebuilt against Electron's ABI by `@electron/rebuild`. Do not try to bundle it.
-- The two TypeScript "projects" (`tsconfig.json` for `src/`, referenced `tsconfig.node.json` for `electron/` + config files) are why type declarations are duplicated across the process boundary — when changing a shared shape, update **both** `electron/tournament.ts` and `src/types.d.ts` (the `/edit-tournament-state` skill enforces this).
+- The two TypeScript "projects" (`tsconfig.json` includes both `src/` and `electron/`; `tsconfig.node.json` covers the Vite config files) are why type declarations are duplicated across the process boundary — when changing a shared shape, update **both** `electron/tournament.ts` and `src/types.d.ts` (the `/edit-tournament-state` skill enforces this).

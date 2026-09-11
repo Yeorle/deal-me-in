@@ -249,7 +249,9 @@ export function updatePlayer(player: { id: number; name: string; nickname?: stri
     photo_path: player.photo_path || null
   });
   // A replaced photo would otherwise be orphaned in userData/photos forever.
-  if (previous?.photo_path && previous.photo_path !== (player.photo_path || null)) {
+  // Only unlink when the UPDATE actually matched a row — if the player was
+  // soft-deleted elsewhere, the row still references the old photo.
+  if (result.changes > 0 && previous?.photo_path && previous.photo_path !== (player.photo_path || null)) {
     tryUnlink(previous.photo_path);
   }
   return result;
@@ -433,8 +435,8 @@ export function getPlayerProfile(id: number) {
           COALESCE(SUM(playtime_sec), 0) AS total_playtime,
           COALESCE(SUM(prize - entry_fee), 0) AS total_earnings,
           MIN(place) AS best_place,
-          SUM(CASE WHEN place = 1 THEN 1 ELSE 0 END) AS wins,
-          SUM(CASE WHEN prize > 0 THEN 1 ELSE 0 END) AS cashes
+          COALESCE(SUM(CASE WHEN place = 1 THEN 1 ELSE 0 END), 0) AS wins,
+          COALESCE(SUM(CASE WHEN prize > 0 THEN 1 ELSE 0 END), 0) AS cashes
         FROM TournamentResults WHERE player_id = ?
     `).get(id);
 

@@ -28,7 +28,7 @@ const DEFAULTS: AppSettings = {
 const ALLOWED_LANGUAGES: Language[] = ['en', 'fr'];
 const ALLOWED_ACCENTS: AccentName[] = ['moss', 'slate', 'terracotta', 'plum', 'charcoal'];
 const ALLOWED_CURRENCIES: CurrencyCode[] = ['EUR', 'USD', 'GBP', 'CHF'];
-const HEX_COLOR = /^#[0-9a-fA-F]{3,8}$/;
+const HEX_COLOR = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
 
 function parseColor(value: unknown, fallback: string): string {
     return typeof value === 'string' && HEX_COLOR.test(value) ? value : fallback;

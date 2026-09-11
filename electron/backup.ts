@@ -267,6 +267,51 @@ export function validateDump(json: unknown): DataDumpRows {
   return { players, structures, tournaments, tournamentResults, settings };
 }
 
+// Referential-integrity / uniqueness checks that better-sqlite3 would enforce
+// (and therefore make replaceAllData throw). They must run BEFORE anything is
+// written — the transaction rolls the DB back cleanly, but media files are
+// extracted on disk and must never be clobbered by an import that then fails.
+export function validateReferentialIntegrity(dump: DataDumpRows): void {
+  const checkUniqueIds = (rows: { id: number }[], table: string) => {
+    const seen = new Set<number>();
+    for (const r of rows) {
+      if (seen.has(r.id)) {
+        throw new Error(`Invalid backup: duplicate id ${r.id} in "${table}".`);
+      }
+      seen.add(r.id);
+    }
+  };
+  checkUniqueIds(dump.players, 'players');
+  checkUniqueIds(dump.structures, 'structures');
+  checkUniqueIds(dump.tournaments, 'tournaments');
+  checkUniqueIds(dump.tournamentResults, 'tournamentResults');
+
+  const seenKeys = new Set<string>();
+  for (const s of dump.settings) {
+    if (seenKeys.has(s.key)) {
+      throw new Error(`Invalid backup: duplicate settings key "${s.key}".`);
+    }
+    seenKeys.add(s.key);
+  }
+
+  const playerIds = new Set(dump.players.map(p => p.id));
+  const tournamentIds = new Set(dump.tournaments.map(t => t.id));
+  const seenPairs = new Set<string>();
+  for (const r of dump.tournamentResults) {
+    if (!tournamentIds.has(r.tournament_id)) {
+      throw new Error(`Invalid backup: a result references missing tournament ${r.tournament_id}.`);
+    }
+    if (!playerIds.has(r.player_id)) {
+      throw new Error(`Invalid backup: a result references missing player ${r.player_id}.`);
+    }
+    const pair = `${r.tournament_id}:${r.player_id}`;
+    if (seenPairs.has(pair)) {
+      throw new Error('Invalid backup: duplicate result rows for the same tournament and player.');
+    }
+    seenPairs.add(pair);
+  }
+}
+
 // Only flat entries directly inside photos/ or projector/ are extractable —
 // everything else (nested dirs, ../ traversal, absolute paths) is ignored.
 export function sanitizeZipEntryName(entryName: string): { folder: 'photos' | 'projector'; basename: string } | null {
@@ -323,12 +368,14 @@ function parseJsonEntry(zip: AdmZip, entryName: string): unknown {
   }
 }
 
-// Full replace. Validates the entire archive before the first write, then
-// writes a safety backup of the current data, extracts media, and swaps the DB
-// contents in one transaction. Every in-memory consumer (tournament singleton,
-// open windows, renderer settings) is stale after this returns — the caller
-// must rehydrate the singleton (tournamentManager.reloadFromDb()) and reload
-// every window.
+// Full replace. Validates the entire archive before the first write (row
+// shapes AND referential integrity/uniqueness, so the swap below cannot throw
+// on well-formed-but-inconsistent data), then writes a safety backup of the
+// current data, swaps the DB contents in one transaction, and only then
+// extracts media files — a failed import must not clobber existing photos.
+// Every in-memory consumer (tournament singleton, open windows, renderer
+// settings) is stale after this returns — the caller must rehydrate the
+// singleton (tournamentManager.reloadFromDb()) and reload every window.
 export function importAllData(sourceFilePath: string): { safetyBackupPath: string } {
   const userDataDir = app.getPath('userData');
 
@@ -340,6 +387,7 @@ export function importAllData(sourceFilePath: string): { safetyBackupPath: strin
   }
   validateManifest(parseJsonEntry(zip, 'manifest.json'));
   const dump = validateDump(parseJsonEntry(zip, 'data.json'));
+  validateReferentialIntegrity(dump);
 
   const backupsDir = path.join(userDataDir, 'backups');
   fs.mkdirSync(backupsDir, { recursive: true });
@@ -347,6 +395,11 @@ export function importAllData(sourceFilePath: string): { safetyBackupPath: strin
   const safetyBackupPath = path.join(backupsDir, `pre-import-${stamp}.dmibak`);
   exportAllData(safetyBackupPath);
 
+  replaceAllData(absolutizeDump(dump, userDataDir));
+
+  // Media extraction comes last: from here on the DB swap has committed, so
+  // only a disk-level failure could leave media missing behind live
+  // references.
   for (const entry of zip.getEntries()) {
     const safe = sanitizeZipEntryName(entry.entryName);
     if (!safe) continue;
@@ -355,6 +408,5 @@ export function importAllData(sourceFilePath: string): { safetyBackupPath: strin
     fs.writeFileSync(path.join(destDir, safe.basename), entry.getData());
   }
 
-  replaceAllData(absolutizeDump(dump, userDataDir));
   return { safetyBackupPath };
 }

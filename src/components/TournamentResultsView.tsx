@@ -20,6 +20,10 @@ const TournamentResultsView: React.FC = () => {
         window.api.getTournamentResults(Number(id)).then(d => {
             setData(d);
             setLoaded(true);
+        }).catch(e => {
+            console.error('Failed to load tournament results', e);
+            setData(null);
+            setLoaded(true);
         });
     }, [id]);
 

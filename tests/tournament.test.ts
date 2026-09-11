@@ -30,8 +30,10 @@ function fakeWindow(): BrowserWindow {
     } as unknown as BrowserWindow;
 }
 
+// Email is deliberately present: every broadcast/snapshot must sanitize it
+// away (see getState()/getStateForSave()).
 function makePlayers(n: number): Player[] {
-    return Array.from({ length: n }, (_, i) => ({ id: i + 1, name: `Player ${i + 1}` }));
+    return Array.from({ length: n }, (_, i) => ({ id: i + 1, name: `Player ${i + 1}`, email: `p${i + 1}@example.com` }));
 }
 
 interface SetupOptions {
@@ -254,6 +256,166 @@ describe('standings and prizes', () => {
         const [, rows] = vi.mocked(saveTournamentResults).mock.calls[0];
         expect(rows).toHaveLength(3);
         expect(new Set(rows.map(r => r.place))).toEqual(new Set([1, 2, 3]));
+    });
+});
+
+describe('timer / elapsed time', () => {
+    it('reconciles elapsedTime and timeLeftInLevel on pause between ticks', () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+        try {
+            vi.setSystemTime(0);
+            const manager = setup({ players: 4, playersPerTable: 9 });
+            manager.startTimer();
+            vi.advanceTimersByTime(1000); // a few ticks; Date.now() = 1_000
+            expect(manager.getState().elapsedTime).toBe(1);
+
+            // The wall clock ran on but no tick fired (main process blocked,
+            // system suspend, …). Pausing must capture every elapsed second —
+            // survivors' playtime at finalize depends on this.
+            vi.setSystemTime(15_900);
+            manager.pauseTimer();
+            const state = manager.getState();
+            expect(state.elapsedTime).toBe(15);
+            expect(state.timeLeftInLevel).toBe(885);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('does not double-count overshoot when a tick spans a level boundary', () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+        try {
+            vi.setSystemTime(0);
+            const manager = setup({ players: 4, playersPerTable: 9 });
+            manager.startTimer();
+            vi.setSystemTime(10_000);
+            vi.advanceTimersByTime(250);
+            expect(manager.getState().elapsedTime).toBe(10);
+
+            // Jump to 905s and tick: level 1 (900s) crossed with a 5s overshoot.
+            vi.setSystemTime(905_000);
+            vi.advanceTimersByTime(250);
+            expect(manager.getState().currentLevelIndex).toBe(1);
+            expect(manager.getState().timeLeftInLevel).toBe(895);
+
+            vi.setSystemTime(906_000);
+            vi.advanceTimersByTime(250);
+            // Without the overshoot fix this reads 911 — the 5 overshoot
+            // seconds were counted a second time against the re-anchored
+            // segment.
+            expect(manager.getState().elapsedTime).toBe(906);
+            expect(manager.getState().timeLeftInLevel).toBe(894);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('startTimer without a live tournament does not run the clock', () => {
+        const manager = new TournamentManager();
+        manager.toggleTimer();
+        expect(manager.getState().isPaused).toBe(true);
+    });
+});
+
+describe('sanitization', () => {
+    it('strips email from both the broadcast state and the persisted snapshot', () => {
+        const manager = setup({ players: 4 });
+        const state = manager.getState();
+        const anySeated = state.tables[0].seats.find(s => s.player)!.player!;
+        expect(anySeated.name).toBeTruthy();
+        expect('email' in anySeated).toBe(false);
+
+        const lastSave = vi.mocked(updateTournamentState).mock.calls.at(-1)![1];
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const savedPlayer = (lastSave as any).tables[0].seats.find((s: any) => s.player).player;
+        expect('email' in savedPlayer).toBe(false);
+    });
+});
+
+describe('seating edge cases', () => {
+    it('busting before the first seating keeps totalEntries intact', () => {
+        const manager = new TournamentManager();
+        manager.initialize(
+            fakeWindow(),
+            [{ smallBlind: 100, bigBlind: 200, duration: 900 }],
+            makePlayers(10),
+            9,
+            'Test Tournament',
+            true, true, false,
+            10000,
+            [],
+            { entryFee: 50, currency: 'EUR', structureId: 1, structureName: 'Turbo' },
+        );
+        manager.bustPlayer(1); // player is still unassigned — a "no-show" bust
+        manager.randomizeSeating();
+        const state = manager.getState();
+        // totalEntries must stay 10 (it is persisted and shown in history);
+        // playersRemaining tracks the 9 live players.
+        expect(state.totalEntries).toBe(10);
+        expect(state.playersRemaining).toBe(9);
+        expect(seatedCount(manager)).toBe(9);
+    });
+
+    it('randomizeSeating adopts a requested table size into playersPerTable', () => {
+        const manager = new TournamentManager();
+        manager.initialize(
+            fakeWindow(),
+            [{ smallBlind: 100, bigBlind: 200, duration: 900 }],
+            makePlayers(10),
+            9, // default playersPerTable — overridden below
+            'Test Tournament',
+            true, true, false,
+            10000,
+            [],
+            { entryFee: 50, currency: 'EUR', structureId: 1, structureName: 'Turbo' },
+        );
+        manager.randomizeSeating(5); // fresh seating with a different ppt
+        const state = manager.getState();
+        // Tables are built at 5 seats and playersPerTable is adopted — merge/
+        // balance/capacity math uses this.playersPerTable, so a mismatch would
+        // strand players in the merge fallback.
+        expect(state.tables).toHaveLength(2);
+        for (const table of state.tables) {
+            expect(table.seats).toHaveLength(5);
+        }
+        expect(seatedCount(manager)).toBe(10);
+    });
+});
+
+describe('removePlayerFromTournament (delete while running)', () => {
+    it('drops the player from every live list so no result row is written', () => {
+        const manager = setup({ players: 5, playersPerTable: 9, autoMerge: false, autoBalance: false });
+        manager.bustPlayer(2);
+        manager.removePlayerFromTournament(1); // was seated
+
+        const state = manager.getState();
+        expect(state.bustedPlayers.map(p => p.id)).toEqual([2]);
+        expect(state.playersRemaining).toBe(3);
+        expect(seatedCount(manager)).toBe(3);
+
+        const standings = manager.getStandings();
+        expect(standings.find(r => r.playerId === 1)).toBeUndefined();
+        expect(standings).toHaveLength(4);
+
+        manager.finalize(standings.filter(r => r.isSurvivor).map(r => r.playerId));
+        const [, rows] = vi.mocked(saveTournamentResults).mock.calls.at(-1)!;
+        expect(rows.find(r => r.player_id === 1)).toBeUndefined();
+        expect(rows).toHaveLength(4);
+    });
+});
+
+describe('switchTournament', () => {
+    it('aborts without pausing/saving the live clock when the target is not running', () => {
+        const manager = setup({ players: 4 });
+        manager.startTimer();
+        expect(manager.getState().isPaused).toBe(false);
+
+        vi.mocked(updateTournamentState).mockClear();
+        manager.switchTournament(42); // getTournamentById is mocked → undefined
+
+        expect(manager.getState().isPaused).toBe(false);
+        // The stale save() must not have been flushed either.
+        expect(updateTournamentState).not.toHaveBeenCalled();
     });
 });
 

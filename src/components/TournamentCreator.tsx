@@ -38,14 +38,19 @@ const TournamentCreator: React.FC<TournamentCreatorProps> = ({ onClose, onSave }
             if (s.length > 0) setSelectedStructureId(s[0].id!);
             if (p.length > 0) setSelectedPlayerIds(p.map(x => x.id!));
         };
-        loadData();
+        loadData().catch(e => {
+            console.error('Failed to load creator data', e);
+            setSaveError(t('common.error'));
+        });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const totalSeats = numTables * maxPlayersPerTable;
     const isCapacityError = selectedPlayerIds.length > totalSeats;
+    const isNoPlayers = selectedPlayerIds.length === 0;
 
     const handleSave = async () => {
-        if (!selectedStructureId || !tournamentName.trim() || isCapacityError) return;
+        if (!selectedStructureId || !tournamentName.trim() || isCapacityError || isNoPlayers) return;
         setIsLoading(true);
         try {
             // Assign each row its displayed place BEFORE dropping empty rows —
@@ -216,7 +221,7 @@ const TournamentCreator: React.FC<TournamentCreatorProps> = ({ onClose, onSave }
                                 className={`${inputClass} pr-8 tabular`}
                                 placeholder="0"
                                 value={entryFee === 0 ? '' : entryFee}
-                                onChange={(e) => setEntryFee(Number(e.target.value) || 0)}
+                                onChange={(e) => setEntryFee(Math.max(0, Number(e.target.value) || 0))}
                             />
                             <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-ink-muted pointer-events-none">{symbol}</span>
                         </div>
@@ -241,7 +246,7 @@ const TournamentCreator: React.FC<TournamentCreatorProps> = ({ onClose, onSave }
                                             className={`${inputClass} pr-8 tabular`}
                                             placeholder="0"
                                             value={prize.amount === 0 ? '' : prize.amount}
-                                            onChange={(e) => updatePrizeAmount(index, Number(e.target.value) || 0)}
+                                            onChange={(e) => updatePrizeAmount(index, Math.max(0, Number(e.target.value) || 0))}
                                         />
                                         <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-ink-muted pointer-events-none">{symbol}</span>
                                     </div>
@@ -305,7 +310,8 @@ const TournamentCreator: React.FC<TournamentCreatorProps> = ({ onClose, onSave }
 
                 <div className="px-6 py-4 border-t border-line flex justify-end items-center gap-3">
                     {saveError && <span className="text-danger text-xs mr-auto">{saveError}</span>}
-                    {!saveError && !selectedStructureId && <span className="text-danger text-xs mr-auto">{t('creator.pleaseSelectStructure')}</span>}
+                    {!saveError && isNoPlayers && <span className="text-danger text-xs mr-auto">{t('creator.pleaseSelectPlayers')}</span>}
+                    {!saveError && !isNoPlayers && !selectedStructureId && <span className="text-danger text-xs mr-auto">{t('creator.pleaseSelectStructure')}</span>}
                     <button
                         onClick={onClose}
                         className="px-4 py-2 rounded text-sm font-medium text-ink-muted hover:text-ink transition-colors"
@@ -314,9 +320,9 @@ const TournamentCreator: React.FC<TournamentCreatorProps> = ({ onClose, onSave }
                     </button>
                     <button
                         onClick={handleSave}
-                        disabled={isLoading || !selectedStructureId || !tournamentName.trim() || isCapacityError}
+                        disabled={isLoading || !selectedStructureId || !tournamentName.trim() || isCapacityError || isNoPlayers}
                         className={`px-5 py-2 rounded text-sm font-medium transition-colors ${
-                            isLoading || !selectedStructureId || !tournamentName.trim() || isCapacityError
+                            isLoading || !selectedStructureId || !tournamentName.trim() || isCapacityError || isNoPlayers
                                 ? 'bg-line text-ink-faint cursor-not-allowed'
                                 : 'bg-accent text-white hover:bg-accent-600'
                         }`}

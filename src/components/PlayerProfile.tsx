@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { PlayerProfileData } from '../types';
 import { useSettings } from '../i18n/useSettings';
@@ -22,18 +22,38 @@ const PlayerProfile: React.FC = () => {
     const [photoPath, setPhotoPath] = useState('');
     const [existingPhotoPath, setExistingPhotoPath] = useState<string | undefined>(undefined);
     const [justSaved, setJustSaved] = useState(false);
+    const [saveError, setSaveError] = useState(false);
+    const [loadFailed, setLoadFailed] = useState(false);
+    // Object URL for the freshly picked file — a picked path is outside the
+    // media:// allowlist, so mediaUrl() would 403 on it.
+    const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+    const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    useEffect(() => () => {
+        if (previewUrl) URL.revokeObjectURL(previewUrl);
+        if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+    }, [previewUrl]);
 
     const load = async () => {
         if (!id) return;
-        const d = await window.api.getPlayerProfile(Number(id));
-        setData(d);
-        setLoaded(true);
-        if (d) {
-            setName(d.player.name || '');
-            setNickname(d.player.nickname || '');
-            setEmail(d.player.email || '');
-            setExistingPhotoPath(d.player.photo_path);
-            setPhotoPath('');
+        setLoadFailed(false);
+        try {
+            const d = await window.api.getPlayerProfile(Number(id));
+            setData(d);
+            if (d) {
+                setName(d.player.name || '');
+                setNickname(d.player.nickname || '');
+                setEmail(d.player.email || '');
+                setExistingPhotoPath(d.player.photo_path);
+                setPhotoPath('');
+                setPreviewUrl(null);
+            }
+        } catch (e) {
+            console.error('Failed to load player profile', e);
+            setData(null);
+            setLoadFailed(true);
+        } finally {
+            setLoaded(true);
         }
     };
 
@@ -45,16 +65,23 @@ const PlayerProfile: React.FC = () => {
     const handleSave = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!name.trim() || !id) return;
-        await window.api.updatePlayer({
-            id: Number(id),
-            name,
-            nickname,
-            email,
-            photoPath,
-            photo_path: existingPhotoPath,
-        });
-        setJustSaved(true);
-        setTimeout(() => setJustSaved(false), 1500);
+        setSaveError(false);
+        try {
+            await window.api.updatePlayer({
+                id: Number(id),
+                name,
+                nickname,
+                email,
+                photoPath,
+                photo_path: existingPhotoPath,
+            });
+            setJustSaved(true);
+            if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+            savedTimerRef.current = setTimeout(() => setJustSaved(false), 1500);
+        } catch (err) {
+            console.error('Failed to save player', err);
+            setSaveError(true);
+        }
         await load();
     };
 
@@ -62,16 +89,15 @@ const PlayerProfile: React.FC = () => {
         return (
             <div className="px-10 py-10 max-w-5xl">
                 <BackLink label={t('profile.back')} onClick={() => navigate('/players')} />
-                <p className="text-sm text-ink-muted mt-6">{t('profile.notFound')}</p>
+                <p className="text-sm text-ink-muted mt-6">{loadFailed ? t('common.error') : t('profile.notFound')}</p>
             </div>
         );
     }
     if (!data) return null;
 
     const { stats, history } = data;
-    const previewSrc = photoPath
-        ? mediaUrl(photoPath)
-        : existingPhotoPath ? mediaUrl(existingPhotoPath) : defaultAvatar;
+    const previewSrc = previewUrl
+        ?? (existingPhotoPath ? mediaUrl(existingPhotoPath) : defaultAvatar);
 
     const inputClass = "w-full bg-surface border border-line rounded px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent transition-colors";
 
@@ -111,14 +137,20 @@ const PlayerProfile: React.FC = () => {
                                 accept="image/*"
                                 onChange={(e) => {
                                     const file = e.target.files?.[0];
-                                    if (file) setPhotoPath(window.api.getPathForFile(file));
+                                    e.target.value = '';
+                                    if (file) {
+                                        setPhotoPath(window.api.getPathForFile(file));
+                                        if (previewUrl) URL.revokeObjectURL(previewUrl);
+                                        setPreviewUrl(URL.createObjectURL(file));
+                                    }
                                 }}
                                 className="block w-full text-sm text-ink-soft file:mr-3 file:py-1.5 file:px-3 file:rounded file:border file:border-line file:text-xs file:font-medium file:bg-surface file:text-ink hover:file:bg-surface-sunken file:transition-colors file:cursor-pointer"
                             />
                         </div>
                     </div>
                     <div className="mt-5 flex justify-end items-center gap-3">
-                        {justSaved && <span className="text-xs text-accent">{t('profile.saved')}</span>}
+                        {saveError && <span className="text-xs text-danger">{t('common.error')}</span>}
+                        {justSaved && !saveError && <span className="text-xs text-accent">{t('profile.saved')}</span>}
                         <button type="submit" className="bg-accent text-white px-4 py-2 rounded text-sm font-medium hover:bg-accent-600 transition-colors">
                             {t('common.save')}
                         </button>
@@ -134,8 +166,8 @@ const PlayerProfile: React.FC = () => {
                             <Stat label={t('profile.totalPlaytime')} value={formatDuration(stats.total_playtime)} />
                             <Stat label={t('profile.totalEarnings')} value={formatCurrency(stats.total_earnings)} valueClass={stats.total_earnings > 0 ? 'text-accent' : stats.total_earnings < 0 ? 'text-danger' : 'text-ink'} />
                             <Stat label={t('profile.bestFinish')} value={stats.best_place ? placeLabel(stats.best_place, t) : '-'} />
-                            <Stat label={t('profile.wins')} value={String(stats.wins)} />
-                            <Stat label={t('profile.cashes')} value={String(stats.cashes)} />
+                            <Stat label={t('profile.wins')} value={String(stats.wins ?? 0)} />
+                            <Stat label={t('profile.cashes')} value={String(stats.cashes ?? 0)} />
                         </div>
                     </div>
 

@@ -15,6 +15,7 @@ export const en = {
     // Common
     'common.cancel': 'Cancel',
     'common.close': 'Close',
+    'common.error': 'Something went wrong. Please try again.',
     'common.save': 'Save',
     'common.delete': 'Delete',
     'common.edit': 'Edit',
@@ -28,7 +29,11 @@ export const en = {
     'place.first': '1st',
     'place.second': '2nd',
     'place.third': '3rd',
-    'place.nth': '{n}th',
+    'place.nth': '{n}',
+    'place.ordSt': 'st',
+    'place.ordNd': 'nd',
+    'place.ordRd': 'rd',
+    'place.ordTh': 'th',
 
     // ControlPanel
     'controlPanel.title': 'Control Panel',
@@ -102,6 +107,7 @@ export const en = {
     'creator.selectAll': 'Select All',
     'creator.deselectAll': 'Deselect All',
     'creator.pleaseSelectStructure': 'Please select a structure',
+    'creator.pleaseSelectPlayers': 'Please select at least one player',
     'creator.creating': 'Creating...',
     'creator.createFailed': 'Failed to create the tournament. Check the app logs for details.',
     'creator.create': 'Create Tournament',
@@ -175,6 +181,8 @@ export const en = {
     'editor.validationNoLevels': 'Add at least one level before saving.',
     'editor.validationBlinds': 'Level {n}: blinds must be positive and the big blind cannot be smaller than the small blind.',
     'editor.validationDuration': 'Level {n}: duration must be at least 1 minute.',
+    'editor.validationStartingChips': 'Starting chips must be a positive number.',
+    'editor.notFound': 'The requested structure could not be found. Saving would create a new structure.',
 
     // ManagePlayersModal
     'manage.title': 'Manage Players',
@@ -344,6 +352,7 @@ export const fr: Record<TranslationKey, string> = {
     // Common
     'common.cancel': 'Annuler',
     'common.close': 'Fermer',
+    'common.error': 'Une erreur est survenue. Veuillez réessayer.',
     'common.save': 'Enregistrer',
     'common.delete': 'Supprimer',
     'common.edit': 'Modifier',
@@ -357,7 +366,11 @@ export const fr: Record<TranslationKey, string> = {
     'place.first': '1er',
     'place.second': '2e',
     'place.third': '3e',
-    'place.nth': '{n}e',
+    'place.nth': '{n}',
+    'place.ordSt': 'e',
+    'place.ordNd': 'e',
+    'place.ordRd': 'e',
+    'place.ordTh': 'e',
 
     // ControlPanel
     'controlPanel.title': 'Panneau de contrôle',
@@ -431,6 +444,7 @@ export const fr: Record<TranslationKey, string> = {
     'creator.selectAll': 'Tout sélectionner',
     'creator.deselectAll': 'Tout désélectionner',
     'creator.pleaseSelectStructure': 'Veuillez choisir une structure',
+    'creator.pleaseSelectPlayers': 'Veuillez sélectionner au moins un joueur',
     'creator.creating': 'Création...',
     'creator.createFailed': 'Échec de la création du tournoi. Consultez les journaux de l\'application.',
     'creator.create': 'Créer le tournoi',
@@ -504,6 +518,8 @@ export const fr: Record<TranslationKey, string> = {
     'editor.validationNoLevels': 'Ajoutez au moins un niveau avant d\'enregistrer.',
     'editor.validationBlinds': 'Niveau {n} : les blindes doivent être positives et la grosse blinde ne peut pas être inférieure à la petite blinde.',
     'editor.validationDuration': 'Niveau {n} : la durée doit être d\'au moins 1 minute.',
+    'editor.validationStartingChips': 'Les jetons de départ doivent être supérieurs à 0.',
+    'editor.notFound': 'La structure demandée est introuvable. Enregistrer créerait une nouvelle structure.',
 
     // ManagePlayersModal
     'manage.title': 'Gérer les joueurs',
@@ -667,7 +683,10 @@ export function translate(language: Language, key: TranslationKey, vars?: Record
     let value: string = dict[key] ?? en[key] ?? key;
     if (vars) {
         for (const [k, v] of Object.entries(vars)) {
-            value = value.replace(new RegExp(`\\{${k}\\}`, 'g'), String(v));
+            // Function replacement: a string replacement would interpret $&
+            // / $` sequences inside interpolated values (file paths, error
+            // messages) as replacement patterns.
+            value = value.replace(new RegExp(`\\{${k}\\}`, 'g'), () => String(v));
         }
     }
     return value;
