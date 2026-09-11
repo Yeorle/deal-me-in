@@ -25,6 +25,7 @@ import {
     buildManifest,
     validateManifest,
     validateDump,
+    validateReferentialIntegrity,
     sanitizeZipEntryName,
     exportAllData,
     importAllData,
@@ -233,6 +234,37 @@ describe('validateDump', () => {
     });
 });
 
+describe('validateReferentialIntegrity', () => {
+    it('accepts a consistent dump unchanged', () => {
+        const { dump } = relativizeDump(makeRows());
+        expect(() => validateReferentialIntegrity(dump)).not.toThrow();
+    });
+
+    it('rejects result rows referencing missing tournaments or players', () => {
+        const { dump } = relativizeDump(makeRows());
+        dump.tournamentResults[0].tournament_id = 99;
+        expect(() => validateReferentialIntegrity(dump)).toThrow(/missing tournament/);
+
+        const { dump: d2 } = relativizeDump(makeRows());
+        d2.tournamentResults[0].player_id = 99;
+        expect(() => validateReferentialIntegrity(d2)).toThrow(/missing player/);
+    });
+
+    it('rejects duplicate primary keys, settings keys and (tournament, player) pairs', () => {
+        const { dump } = relativizeDump(makeRows());
+        dump.players.push({ ...dump.players[0] });
+        expect(() => validateReferentialIntegrity(dump)).toThrow(/duplicate id/);
+
+        const { dump: d2 } = relativizeDump(makeRows());
+        d2.settings.push({ key: 'currency', value: 'USD' });
+        expect(() => validateReferentialIntegrity(d2)).toThrow(/duplicate settings key/);
+
+        const { dump: d3 } = relativizeDump(makeRows());
+        d3.tournamentResults.push({ ...d3.tournamentResults[0], id: 2 });
+        expect(() => validateReferentialIntegrity(d3)).toThrow(/duplicate result rows/);
+    });
+});
+
 describe('sanitizeZipEntryName', () => {
     it('accepts flat entries in the two media folders', () => {
         expect(sanitizeZipEntryName('photos/123-abc.jpg')).toEqual({ folder: 'photos', basename: '123-abc.jpg' });
@@ -323,5 +355,24 @@ describe('exportAllData / importAllData round-trip', () => {
         expect(() => importAllData(archivePath)).toThrow(/newer version/);
         expect(replaceAllData).not.toHaveBeenCalled();
         expect(fs.existsSync(path.join(dstDir, 'photos', '111-aaa.jpg'))).toBe(false);
+    });
+
+    it('rejects a referentially-broken dump before overwriting any media file', () => {
+        exportAllData(archivePath);
+        // Hand-edit data.json: a result referencing a player that does not
+        // exist. replaceAllData would throw on the FK — validation must catch
+        // it BEFORE the media extraction would clobber existing files.
+        const zip = new AdmZip(archivePath);
+        const dump = JSON.parse(zip.readAsText('data.json'));
+        dump.tournamentResults[0].player_id = 99;
+        zip.updateFile('data.json', Buffer.from(JSON.stringify(dump)));
+        zip.writeZip(archivePath);
+
+        fs.mkdirSync(path.join(dstDir, 'photos'), { recursive: true });
+        fs.writeFileSync(path.join(dstDir, 'photos', '111-aaa.jpg'), 'original');
+
+        expect(() => importAllData(archivePath)).toThrow(/missing player/);
+        expect(replaceAllData).not.toHaveBeenCalled();
+        expect(fs.readFileSync(path.join(dstDir, 'photos', '111-aaa.jpg'), 'utf-8')).toBe('original');
     });
 });

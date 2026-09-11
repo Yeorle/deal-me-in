@@ -22,9 +22,14 @@ const TournamentHistory: React.FC = () => {
 
     const confirmDelete = async () => {
         if (deleteId !== null) {
-            await window.api.deleteTournament(deleteId);
-            setDeleteId(null);
-            load();
+            try {
+                await window.api.deleteTournament(deleteId);
+                setDeleteId(null);
+                await load();
+            } catch (e) {
+                console.error('Failed to delete tournament', e);
+                setDeleteId(null);
+            }
         }
     };
 

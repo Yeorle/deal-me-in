@@ -77,7 +77,13 @@ const StructureList: React.FC = () => {
                             </div>
                             <div className="flex justify-between">
                                 <span className="text-ink-muted">{t('structureList.levels')}</span>
-                                <span className="text-ink tabular">{JSON.parse(struct.data).length}</span>
+                                <span className="text-ink tabular">{(() => {
+                                    try {
+                                        return JSON.parse(struct.data || '[]').length;
+                                    } catch {
+                                        return '–';
+                                    }
+                                })()}</span>
                             </div>
                         </div>
 

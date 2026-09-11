@@ -6,7 +6,7 @@ feature ideas, translations, and code.
 ## Getting started
 
 ```bash
-npm install    # also rebuilds the better-sqlite3 native module for Electron
+npm install    # (better-sqlite3 is rebuilt for Electron during `npm run build` packaging)
 npm run dev    # Vite dev server + Electron with hot-module reload
 ```
 

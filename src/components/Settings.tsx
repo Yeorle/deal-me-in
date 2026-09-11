@@ -15,13 +15,19 @@ const Settings: React.FC = () => {
     const handleExport = async () => {
         setBackupBusy(true);
         setBackupStatus(null);
-        const result = await window.api.exportData();
-        setBackupBusy(false);
-        if (result.canceled) return;
-        if (result.ok && result.path) {
-            setBackupStatus({ kind: 'success', text: t('settings.backupExportSuccess', { path: result.path }) });
-        } else {
-            setBackupStatus({ kind: 'error', text: t('settings.backupExportError', { error: result.error ?? '' }) });
+        try {
+            const result = await window.api.exportData();
+            if (result.canceled) return;
+            if (result.ok && result.path) {
+                setBackupStatus({ kind: 'success', text: t('settings.backupExportSuccess', { path: result.path }) });
+            } else {
+                setBackupStatus({ kind: 'error', text: t('settings.backupExportError', { error: result.error ?? '' }) });
+            }
+        } catch (e) {
+            console.error('Export failed', e);
+            setBackupStatus({ kind: 'error', text: t('settings.backupExportError', { error: String(e) }) });
+        } finally {
+            setBackupBusy(false);
         }
     };
 
@@ -29,17 +35,23 @@ const Settings: React.FC = () => {
         setImportConfirmOpen(false);
         setBackupBusy(true);
         setBackupStatus(null);
-        const result = await window.api.importData();
-        if (result.canceled) {
+        try {
+            const result = await window.api.importData();
+            if (result.canceled) {
+                setBackupBusy(false);
+                return;
+            }
+            if (result.ok) {
+                // Stay busy: the main process reloads every window in a moment.
+                setBackupStatus({ kind: 'reloading', text: t('settings.backupImportReloading', { path: result.backupPath ?? '' }) });
+            } else {
+                setBackupBusy(false);
+                setBackupStatus({ kind: 'error', text: t('settings.backupImportError', { error: result.error ?? '' }) });
+            }
+        } catch (e) {
+            console.error('Import failed', e);
             setBackupBusy(false);
-            return;
-        }
-        if (result.ok) {
-            // Stay busy: the main process reloads every window in a moment.
-            setBackupStatus({ kind: 'reloading', text: t('settings.backupImportReloading', { path: result.backupPath ?? '' }) });
-        } else {
-            setBackupBusy(false);
-            setBackupStatus({ kind: 'error', text: t('settings.backupImportError', { error: result.error ?? '' }) });
+            setBackupStatus({ kind: 'error', text: t('settings.backupImportError', { error: String(e) }) });
         }
     };
 

@@ -43,6 +43,12 @@ const StructureEditor: React.FC = () => {
                         setStartingChips(struct.starting_chips);
                         const parsedLevels = JSON.parse(struct.data) as BlindLevel[];
                         setLevels(parsedLevels.map(lvl => ({ ...lvl, _key: newKey() })));
+                    } else {
+                        // Stale id (structure deleted while this window was
+                        // opening): say so instead of silently degrading to
+                        // "new structure" — saving would create an unintended
+                        // duplicate.
+                        setNotice({ kind: 'error', text: t('editor.notFound') });
                     }
                 } catch (error) {
                     console.error("Failed to load structure:", error);
@@ -50,6 +56,9 @@ const StructureEditor: React.FC = () => {
             }
         };
         loadStructure();
+        // t is stable per language; the notice is cosmetic, no need to reload
+        // the structure when the language changes.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [location.search]);
 
     const handleAddLevel = () => {
@@ -129,6 +138,9 @@ const StructureEditor: React.FC = () => {
     const validate = (): string | null => {
         if (!structureName.trim()) return t('editor.validationName');
         if (levels.length === 0) return t('editor.validationNoLevels');
+        if (!Number.isFinite(Number(startingChips)) || Number(startingChips) <= 0) {
+            return t('editor.validationStartingChips');
+        }
         for (let i = 0; i < levels.length; i++) {
             const lvl = levels[i];
             if (!lvl.duration || lvl.duration < 1) return t('editor.validationDuration', { n: i + 1 });
@@ -139,7 +151,10 @@ const StructureEditor: React.FC = () => {
         return null;
     };
 
-    const handleSave = async () => {
+    const [isSaving, setIsSaving] = useState(false);
+
+    const handleSave = async (): Promise<boolean> => {
+        if (isSaving) return false;
         setNotice(null);
         const validationError = validate();
         if (validationError) {
@@ -147,6 +162,7 @@ const StructureEditor: React.FC = () => {
             return false;
         }
 
+        setIsSaving(true);
         try {
             const structData = {
                 name: structureName,
@@ -169,6 +185,8 @@ const StructureEditor: React.FC = () => {
             console.error('Failed to save structure:', error);
             setNotice({ kind: 'error', text: t('editor.saveFailedAlert') });
             return false;
+        } finally {
+            setIsSaving(false);
         }
     };
 

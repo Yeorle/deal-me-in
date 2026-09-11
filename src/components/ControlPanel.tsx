@@ -55,7 +55,19 @@ const ControlPanel: React.FC = () => {
     const [dragTime, setDragTime] = useState<number | null>(null);
 
     useEffect(() => {
+        // Track whether a broadcast already arrived: the initial fetch (an
+        // invoke round-trip) can resolve AFTER a newer broadcast and briefly
+        // revert the UI to an older snapshot.
+        let receivedBroadcast = false;
+        // When the level rolls over mid-drag the old drag scale is invalid —
+        // drop the local drag value so the thumb re-syncs with the new level.
+        let lastLevelIndex: number | null = null;
+
         const handleStateUpdate = (state: TournamentState) => {
+            receivedBroadcast = true;
+            const levelChanged = lastLevelIndex !== null && lastLevelIndex !== state.currentLevelIndex;
+            lastLevelIndex = state.currentLevelIndex;
+            if (levelChanged) setDragTime(null);
             setTimerState({
                 id: state.id,
                 remainingTime: state.timeLeftInLevel,
@@ -77,7 +89,9 @@ const ControlPanel: React.FC = () => {
             });
         };
 
-        window.api.getTournamentState().then(handleStateUpdate);
+        window.api.getTournamentState().then(s => {
+            if (!receivedBroadcast) handleStateUpdate(s);
+        });
         loadRunningTournaments();
 
         const removeListener = window.ipcRenderer.on('timer-update', handleStateUpdate);

@@ -146,7 +146,6 @@ export class TournamentManager {
         this.pauseTimer();
         this.save();
 
-        this.addWindow(mainWindow);
         this.levels = levels;
         this.name = name;
         this.playersPerTable = playersPerTable;
@@ -171,9 +170,18 @@ export class TournamentManager {
 
         this.isPaused = true;
 
+        // Detach from the previous tournament row before anything broadcasts,
+        // so the immediate addWindow snapshot reports isActive: false instead
+        // of the old tournament's id.
+        this.tournamentId = null;
+
+        // Register the window only now that the state is reset — addWindow
+        // sends an immediate timer-update snapshot, which must not carry the
+        // previous tournament's data.
+        this.addWindow(mainWindow);
+
         // Create new tournament in DB. tournamentId is set BEFORE building the
         // state object so save() inside broadcastState() writes to the new row.
-        this.tournamentId = null;
         const initialState = this.getStateForSave();
         const result = createTournament(name, initialState, meta);
         this.tournamentId = Number(result.lastInsertRowid);
@@ -239,15 +247,17 @@ export class TournamentManager {
     public switchTournament(id: number) {
         if (this.tournamentId === id) return;
 
-        this.pauseTimer();
-        this.save();
-
+        // Validate the target BEFORE pausing/saving the live tournament — if
+        // the switch is aborted the current clock must keep its exact state.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const saved = getTournamentById(id) as any;
         if (!saved || saved.status !== 'running') {
             console.warn(`switchTournament: tournament ${id} is not running`);
             return;
         }
+
+        this.pauseTimer();
+        this.save();
         this.applySavedRow(saved);
         this.broadcastState();
     }
@@ -285,6 +295,9 @@ export class TournamentManager {
     }
 
     public addWindow(window: BrowserWindow) {
+        // Guard against duplicate registration (re-initializing a tournament
+        // in the same window would otherwise stack 'closed' listeners).
+        if (this.windows.has(window)) return;
         this.windows.add(window);
         window.on('closed', () => {
             this.windows.delete(window);
@@ -315,6 +328,10 @@ export class TournamentManager {
 
     public startTimer() {
         if (!this.isPaused) return;
+        // Starting the clock is meaningless without a live tournament — and
+        // the first tick would otherwise immediately hit the final-level
+        // branch of tick() and self-pause.
+        if (!this.tournamentId) return;
 
         this.isPaused = false;
         this.anchorTimer();
@@ -334,7 +351,18 @@ export class TournamentManager {
         if (this.isPaused) return;
 
         this.isPaused = true;
-        this.segmentStartMs = null;
+
+        // Reconcile the wall clock so the pause captures every elapsed second
+        // since the last tick (ticks run at 250ms, so this is at most a
+        // fraction of a second) — survivors' playtime at finalize depends on
+        // this value.
+        if (this.segmentStartMs !== null) {
+            const elapsedSegment = Math.floor((Date.now() - this.segmentStartMs) / 1000);
+            this.elapsedTime = this.elapsedAtSegmentStart + elapsedSegment;
+            this.timeLeftInLevel = Math.max(0, this.timeLeftAtSegmentStart - elapsedSegment);
+            this.segmentStartMs = null;
+        }
+
         if (this.timerInterval) {
             clearInterval(this.timerInterval);
             this.timerInterval = null;
@@ -374,7 +402,10 @@ export class TournamentManager {
                 // Re-anchor so the next tick measures from this new level start.
                 this.segmentStartMs = Date.now() - (overshoot * 1000);
                 this.timeLeftAtSegmentStart = dur;
-                this.elapsedAtSegmentStart = this.elapsedTime;
+                // elapsedTime already includes the overshoot (it was part of
+                // elapsedSegment), and segmentStartMs is backdated by it — so
+                // subtract here or the next tick would count those seconds twice.
+                this.elapsedAtSegmentStart = this.elapsedTime - overshoot;
             } else {
                 newTimeLeft = 0;
                 this.timeLeftInLevel = 0;
@@ -443,7 +474,14 @@ export class TournamentManager {
     public randomizeSeating(playersPerTable?: number) {
         if (this.unassignedPlayers.length === 0) return;
 
-        const ppt = playersPerTable || this.playersPerTable;
+        // Adopt the requested table size globally: every downstream capacity
+        // calculation (ensureSeatCapacity, merge, final-table collapse) uses
+        // this.playersPerTable, so tables must never be built at a different
+        // size than the one the math assumes.
+        if (playersPerTable && playersPerTable > 0) {
+            this.playersPerTable = playersPerTable;
+        }
+        const ppt = this.playersPerTable;
         devLog(`Randomizing seating for ${this.unassignedPlayers.length} unassigned players with ${ppt} per table...`);
 
         const playersToSeat = shuffle(this.unassignedPlayers);
@@ -558,9 +596,10 @@ export class TournamentManager {
             });
         }
 
-        // Update counts
-        this.playersRemaining = shuffledPlayers.length;
-        this.totalEntries = shuffledPlayers.length;
+        // Update counts. totalEntries must NOT be reset here: players can be
+        // busted while still unassigned (before the first seating), and the
+        // entry count is a persisted, displayed stat that includes them.
+        this.playersRemaining = this.totalEntries - this.bustedPlayers.length;
 
         this.save();
         this.broadcastState();
@@ -626,7 +665,44 @@ export class TournamentManager {
         }
     }
 
-    // Add empty tables until every unassigned player has a seat available.
+    // Drop a player from the live tournament entirely — used when they are
+    // soft-deleted from the roster while the tournament is running. Unlike
+    // bustPlayer this keeps no trace (no bustedPlayers entry, no bustElapsed),
+    // so their PII and dangling photo path cannot be re-saved into the state
+    // snapshot by a later broadcast and the DB-side scrub sticks.
+    public removePlayerFromTournament(playerId: number) {
+        if (!this.tournamentId) return;
+
+        let wasLive = false;
+        let wasSeated = false;
+
+        for (const table of this.tables) {
+            for (const seat of table.seats) {
+                if (seat.player && seat.player.id === playerId) {
+                    seat.player = null;
+                    wasLive = true;
+                    wasSeated = true;
+                }
+            }
+        }
+        const unassignedIdx = this.unassignedPlayers.findIndex(p => p.id === playerId);
+        if (unassignedIdx !== -1) {
+            this.unassignedPlayers.splice(unassignedIdx, 1);
+            wasLive = true;
+        }
+        // If they had already busted, playersRemaining was decremented at bust
+        // time — dropping the trace must not decrement it again.
+        const bustedIdx = this.bustedPlayers.findIndex(p => p.id === playerId);
+        if (bustedIdx !== -1) this.bustedPlayers.splice(bustedIdx, 1);
+
+        if (wasLive) this.playersRemaining--;
+        delete this.bustElapsed[playerId];
+
+        if (wasSeated) this.checkTableHealth();
+        this.broadcastState();
+    }
+
+// Add empty tables until every unassigned player has a seat available.
     private ensureSeatCapacity() {
         if (this.tables.length === 0) return;
         let emptySeats = this.tables.reduce((n, t) => n + t.seats.filter(s => !s.player).length, 0);
@@ -727,7 +803,9 @@ export class TournamentManager {
             }
             if (!seated) {
                 console.error('CRITICAL: Could not find seat for merged player', player.name);
-                // Fallback: This shouldn't happen if math was right.
+                // Fallback: park the player in the unassigned pool instead of
+                // silently dropping them from the tournament entirely.
+                this.unassignedPlayers.push(player);
             }
         }
 
@@ -863,6 +941,9 @@ export class TournamentManager {
     }
 
     public getState(): TournamentState {
+        // Players are sanitized (no email/PII) before leaving the main
+        // process — the same rule as persisted snapshots applies to every
+        // window, including the projector.
         return {
             id: this.tournamentId ?? undefined,
             currentLevelIndex: this.currentLevelIndex,
@@ -873,9 +954,15 @@ export class TournamentManager {
             nextLevel: this.levels[this.currentLevelIndex + 1],
             currentLevel: this.levels[this.currentLevelIndex],
             levels: this.levels,
-            tables: this.tables,
-            unassignedPlayers: this.unassignedPlayers,
-            bustedPlayers: this.bustedPlayers,
+            tables: this.tables.map(t => ({
+                tableNumber: t.tableNumber,
+                seats: t.seats.map(s => ({
+                    seatNumber: s.seatNumber,
+                    player: s.player ? this.sanitizePlayer(s.player) : null
+                }))
+            })),
+            unassignedPlayers: this.unassignedPlayers.map(p => this.sanitizePlayer(p)),
+            bustedPlayers: this.bustedPlayers.map(p => this.sanitizePlayer(p)),
             isActive: !!this.tournamentId,
             name: this.name,
             autoBalance: this.autoBalance,
@@ -1004,6 +1091,10 @@ export class TournamentManager {
         this.currentLevelIndex = 0;
         this.timeLeftInLevel = 0;
         this.name = '';
+        this.playersPerTable = 9;
+        this.autoBalance = true;
+        this.autoMerge = true;
+        this.shuffleFinalTable = false;
         this.startingChips = 0;
         this.elapsedTime = 0;
         this.prizes = [];

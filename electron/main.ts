@@ -43,10 +43,22 @@ function importFileToUserData(sourcePath: string, subdir: string): string {
   const dir = path.join(app.getPath('userData'), subdir)
   fs.mkdirSync(dir, { recursive: true })
   const ext = path.extname(sourcePath)
-  const filename = `${Date.now()}-${Math.random().toString(36).substring(7)}${ext}`
-  const newPath = path.join(dir, filename)
+  // The random suffix can be shorter than expected (or empty), so loop until
+  // the name is genuinely unused rather than overwrite an existing file.
+  let newPath: string
+  do {
+    const filename = `${Date.now()}-${Math.random().toString(36).substring(7)}${ext}`
+    newPath = path.join(dir, filename)
+  } while (fs.existsSync(newPath))
   fs.copyFileSync(sourcePath, newPath)
   return newPath
+}
+
+// Renderer hardening: a compromised renderer must not be able to open new
+// windows or navigate the app window away from the local bundle.
+function hardenWindow(w: BrowserWindow) {
+  w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  w.webContents.on('will-navigate', (e) => e.preventDefault())
 }
 
 function broadcastToAllWindows(channel: string, payload?: unknown) {
@@ -63,6 +75,7 @@ function createWindow() {
     },
     autoHideMenuBar: true,
   })
+  hardenWindow(win)
 
   if (VITE_DEV_SERVER_URL) {
     win.loadURL(VITE_DEV_SERVER_URL)
@@ -109,7 +122,13 @@ app.whenReady().then(() => {
   ]
   protocol.handle('media', (request) => {
     const encoded = new URL(request.url).pathname.replace(/^\//, '')
-    const filePath = path.resolve(decodeURIComponent(encoded))
+    let filePath: string
+    try {
+      filePath = path.resolve(decodeURIComponent(encoded))
+    } catch {
+      // Malformed percent-encoding must not throw out of the handler.
+      return new Response('Forbidden', { status: 403 })
+    }
     const permitted = allowedMediaRoots.some(root => filePath.startsWith(root + path.sep))
     if (!permitted) return new Response('Forbidden', { status: 403 })
     return net.fetch(pathToFileURL(filePath).toString())
@@ -128,13 +147,28 @@ app.whenReady().then(() => {
   })
 
   ipcMain.handle('db:update-player', (_event, player) => {
+    let importedPhotoPath: string | null = null
     if (player.photoPath) {
       player.photo_path = importFileToUserData(player.photoPath, 'photos');
+      importedPhotoPath = player.photo_path
     }
-    return updatePlayer(player)
+    const result = updatePlayer(player)
+    // If the write didn't land (e.g. the player was soft-deleted elsewhere),
+    // the just-imported file would otherwise be orphaned.
+    if (importedPhotoPath && result.changes === 0) {
+      try {
+        fs.unlinkSync(importedPhotoPath)
+      } catch {
+        // best-effort cleanup
+      }
+    }
+    return result
   })
 
   ipcMain.handle('db:delete-player', (_event, id) => {
+    // If the player is in the live tournament, drop them first: otherwise the
+    // next broadcast would re-save their PII/photo path over the scrub below.
+    tournamentManager.removePlayerFromTournament(id)
     return deletePlayer(id)
   })
 
@@ -219,6 +253,7 @@ app.whenReady().then(() => {
       properties: ['openFile'],
     })
     if (result.canceled || result.filePaths.length === 0) return { ok: true, canceled: true }
+    const wasRunning = !tournamentManager.getState().isPaused
     try {
       // Stop the live tournament's timer first: a tick between the DB swap and
       // the reload would save() stale state on top of the imported rows.
@@ -237,6 +272,9 @@ app.whenReady().then(() => {
       }, 1500)
       return { ok: true, backupPath: safetyBackupPath }
     } catch (e) {
+      // Nothing was written (validation runs before any DB/media write), so
+      // restoring the clock we paused for the attempt is safe.
+      if (wasRunning) tournamentManager.startTimer()
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
     }
   })
@@ -264,6 +302,7 @@ app.whenReady().then(() => {
       fullscreen: true,
       autoHideMenuBar: true,
     })
+    hardenWindow(projectorWin)
 
     if (VITE_DEV_SERVER_URL) {
       projectorWin.loadURL(`${VITE_DEV_SERVER_URL}#/projector`)
@@ -374,6 +413,7 @@ app.whenReady().then(() => {
       },
       autoHideMenuBar: true,
     })
+    hardenWindow(editorWin)
 
     const hash = id ? `/structure-editor?id=${id}` : '/structure-editor';
 

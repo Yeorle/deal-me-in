@@ -203,7 +203,7 @@ contents, only triggers):
 | `window.api` method | Channel | Handler behavior |
 | --- | --- | --- |
 | `exportData()` | `data:export` | `dialog.showSaveDialog` (filter `.dmibak`, default dated name) → `exportAllData(path)` → return `{ ok: true, path }` or `{ ok: false, error }`; `{ ok: true, canceled: true }` on cancel |
-| `importData()` | `data:import` | `dialog.showOpenDialog` → return the picked path *and* run nothing yet? **No** — keep it one round-trip: handler picks file, validates, backs up, imports, returns `{ ok: true }`, then relaunches after a short delay so the renderer can render the success state. The renderer shows its own confirmation modal *before* calling `importData()`. |
+| `importData()` | `data:import` | `dialog.showOpenDialog` → return the picked path *and* run nothing yet? **No** — keep it one round-trip: handler picks file, validates (shape + referential integrity, before any write), backs up, swaps the DB rows in one transaction, extracts media, then rehydrates the singleton and reloads every window in place after a short delay (no `app.relaunch()` — see the rule above). The renderer shows its own confirmation modal *before* calling `importData()`. |
 
 Files to touch, in order: `electron/backup.ts` (new) + `electron/db.ts` (export/import
 row helpers) → `electron/main.ts` (two `ipcMain.handle` + dialogs) → `electron/preload.ts`

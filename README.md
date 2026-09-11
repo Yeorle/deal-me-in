@@ -19,6 +19,7 @@ Built with Electron, React and TypeScript.
 - **Tournament history** — a dedicated section listing past tournaments; open one to see full rankings with playtime and earnings.
 - **Player profiles** — click a player to edit their info and see aggregate stats (tournaments, total playtime, total earnings, best finish, wins, cashes) plus a detailed play history.
 - **Multiple tournaments** — run several tournaments and switch between them.
+- **Full-data backup** — export everything (players, tournaments, structures, results, settings, photos) to a single `.dmibak` file and restore it on any machine, with a safety backup saved before each import.
 - **Localization & theming** — English / French, several accent colors, and EUR / USD / GBP / CHF currency formatting.
 
 ## Screenshots
@@ -79,7 +80,7 @@ player shows as `???` in past results.
 ## Development
 
 ```bash
-npm install        # first time — rebuilds the better-sqlite3 native module for Electron
+npm install        # first time (better-sqlite3 is rebuilt for Electron during `npm run build` packaging)
 npm run dev        # Vite dev server + Electron with hot-module reload
 ```
 

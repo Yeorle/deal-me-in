@@ -46,7 +46,10 @@ const ProjectorView: React.FC = () => {
     const [currentTime, setCurrentTime] = useState<string>(formatEuropeanTime(new Date()));
 
     useEffect(() => {
+        // The initial fetch can resolve after a newer broadcast — ignore it then.
+        let receivedBroadcast = false;
         const handleStateUpdate = (state: TournamentState) => {
+            receivedBroadcast = true;
             setTimerState({
                 remainingTime: state.timeLeftInLevel || 0,
                 level: (state.currentLevelIndex || 0) + 1,
@@ -67,7 +70,9 @@ const ProjectorView: React.FC = () => {
             });
         };
 
-        window.api.getTournamentState().then(handleStateUpdate);
+        window.api.getTournamentState().then(s => {
+            if (!receivedBroadcast) handleStateUpdate(s);
+        });
 
         const removeListener = window.ipcRenderer.on('timer-update', handleStateUpdate);
 
