@@ -86,8 +86,11 @@ const ProjectorView: React.FC = () => {
         };
     }, []);
 
-    const mins = Math.floor(timerState.remainingTime / 60).toString().padStart(2, '0');
-    const secs = (timerState.remainingTime % 60).toString().padStart(2, '0');
+    // Clamp: the engine never sends negatives, but a bad future value must not
+    // render as "-1:45" (negative % 60 keeps the sign).
+    const total = Math.max(0, Math.floor(timerState.remainingTime || 0));
+    const mins = Math.floor(total / 60).toString().padStart(2, '0');
+    const secs = (total % 60).toString().padStart(2, '0');
 
     const isCountdown = timerState.remainingTime < 60 && timerState.isRunning;
     const timerColor = isCountdown ? 'text-accent animate-pulse' : 'text-[color:var(--proj-ink)]';
@@ -171,7 +174,12 @@ const ProjectorView: React.FC = () => {
             </aside>
 
             {/* Center column */}
-            <main className="relative flex flex-col items-center justify-center py-10 px-6 border-x border-ink-faint/100">
+            <main
+                className="relative flex flex-col items-center justify-center py-10 px-6 border-x"
+                // Themed faint ink — the fixed palette `border-ink-faint` would
+                // clash with a custom dark projector theme.
+                style={{ borderColor: 'var(--proj-ink-faint)' }}
+            >
                 {/* Tournament name */}
                 {timerState.name && (
                     <div className="absolute top-10 left-0 right-0 text-center text-[3.5vw] text-[color:var(--proj-ink)] leading-none tracking-tight font-medium">
@@ -239,7 +247,10 @@ const ProjectorView: React.FC = () => {
             {/* Right column */}
             <aside className="grid py-10 px-6 text-center" style={{ gridTemplateRows: '1fr 1fr' }}>
                 {/* Prize distribution */}
-                <div className="flex flex-col items-center justify-center border-b border-ink-faint/100 min-h-0 overflow-hidden">
+                <div
+                    className="flex flex-col items-center justify-center border-b min-h-0 overflow-hidden"
+                    style={{ borderColor: 'var(--proj-ink-faint)' }}
+                >
                     <div className="text-[1.5vw] text-[color:var(--proj-ink-muted)] uppercase tracking-[0.25em] mb-4">{t('projector.prizeDistribution')}</div>
                     {sortedPrizes.length > 0 ? (
                         <div className="flex flex-col items-stretch gap-2 w-full max-w-[14vw]">

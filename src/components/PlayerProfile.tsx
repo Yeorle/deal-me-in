@@ -28,18 +28,40 @@ const PlayerProfile: React.FC = () => {
     // media:// allowlist, so mediaUrl() would 403 on it.
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
     const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const previewUrlRef = useRef<string | null>(null);
     // Guards against out-of-order responses when navigating quickly between
     // two profiles — the slower stale fetch must not win.
     const loadTokenRef = useRef(0);
+    // Lets load()'s catch know whether data is already on screen (a reload
+    // after a successful save must not discard it) without closing over a
+    // stale render value.
+    const dataRef = useRef<PlayerProfileData | null>(null);
+    dataRef.current = data;
 
+    // Single owner of the preview object URL: replaces the previous one
+    // (revoking it) so switching photos or reloading never leaks a URL.
+    const applyPreviewUrl = (next: string | null) => {
+        if (previewUrlRef.current && previewUrlRef.current !== next) {
+            URL.revokeObjectURL(previewUrlRef.current);
+        }
+        previewUrlRef.current = next;
+        setPreviewUrl(next);
+    };
+
+    // Unmount-only cleanup — keyed on nothing, so picking a photo or a reload
+    // must never clear the "Saved" chip timer.
     useEffect(() => () => {
-        if (previewUrl) URL.revokeObjectURL(previewUrl);
+        if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
         if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
-    }, [previewUrl]);
+    }, []);
 
-    const load = async () => {
+    const load = async (opts?: { resetData?: boolean }) => {
         if (!id) return;
         const token = ++loadTokenRef.current;
+        // Navigating to a different player: drop the previous profile (and its
+        // editable form) immediately, so a Save pressed before the fetch
+        // resolves cannot write the previous player's data onto the new id.
+        if (opts?.resetData) setData(null);
         setLoadFailed(false);
         try {
             const d = await window.api.getPlayerProfile(Number(id));
@@ -51,20 +73,22 @@ const PlayerProfile: React.FC = () => {
                 setEmail(d.player.email || '');
                 setExistingPhotoPath(d.player.photo_path);
                 setPhotoPath('');
-                setPreviewUrl(null);
+                applyPreviewUrl(null);
             }
         } catch (e) {
             if (token !== loadTokenRef.current) return;
             console.error('Failed to load player profile', e);
-            setData(null);
             setLoadFailed(true);
+            // A reload after a successful save must not throw away the data
+            // that is already on screen — only a navigation reset does.
+            if (opts?.resetData || !dataRef.current) setData(null);
         } finally {
             if (token === loadTokenRef.current) setLoaded(true);
         }
     };
 
     useEffect(() => {
-        load();
+        load({ resetData: true });
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [id]);
 
@@ -150,8 +174,7 @@ const PlayerProfile: React.FC = () => {
                                     e.target.value = '';
                                     if (file) {
                                         setPhotoPath(window.api.getPathForFile(file));
-                                        if (previewUrl) URL.revokeObjectURL(previewUrl);
-                                        setPreviewUrl(URL.createObjectURL(file));
+                                        applyPreviewUrl(URL.createObjectURL(file));
                                     }
                                 }}
                                 className="block w-full text-sm text-ink-soft file:mr-3 file:py-1.5 file:px-3 file:rounded file:border file:border-line file:text-xs file:font-medium file:bg-surface file:text-ink hover:file:bg-surface-sunken file:transition-colors file:cursor-pointer"

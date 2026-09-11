@@ -58,6 +58,10 @@ const StructureEditor: React.FC = () => {
                     }
                 } catch (error) {
                     console.error("Failed to load structure:", error);
+                    // Same hazard as a stale id: silently degrading to an
+                    // empty "new structure" form makes the next save create an
+                    // unintended duplicate — tell the operator instead.
+                    setNotice({ kind: 'error', text: t('editor.notFound') });
                 }
             }
         };

@@ -532,3 +532,137 @@ describe('state persistence round-trip', () => {
         }
     });
 });
+
+describe('reset (archive without results)', () => {
+    it('archives the row, writes no results, and clears the singleton', () => {
+        const manager = setup({ players: 5, playersPerTable: 9 });
+        manager.bustPlayer(2);
+        expect(manager.getState().isActive).toBe(true);
+
+        manager.reset();
+
+        expect(archiveTournament).toHaveBeenCalledWith(1);
+        // Unlike finalize(), the stop path records no per-player results.
+        expect(saveTournamentResults).not.toHaveBeenCalled();
+
+        const state = manager.getState();
+        expect(state.isActive).toBe(false);
+        expect(state.tables).toHaveLength(0);
+        expect(state.bustedPlayers).toHaveLength(0);
+        expect(state.playersRemaining).toBe(0);
+        expect(state.levels).toHaveLength(0);
+    });
+});
+
+describe('level controls', () => {
+    it('skips forward (no-op at the last level) and re-anchors the running clock', () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+        try {
+            vi.setSystemTime(0);
+            const manager = setup({ players: 4 });
+            manager.startTimer();
+            vi.advanceTimersByTime(10_000);
+
+            manager.goToNextLevel();
+            const state = manager.getState();
+            expect(state.currentLevelIndex).toBe(1);
+            expect(state.timeLeftInLevel).toBe(900);
+
+            // The clock must keep counting from the new level's start.
+            vi.advanceTimersByTime(60_000);
+            expect(manager.getState().elapsedTime).toBe(70);
+            expect(manager.getState().timeLeftInLevel).toBe(840);
+
+            // At the last level skip is a no-op.
+            manager.goToNextLevel();
+            expect(manager.getState().currentLevelIndex).toBe(1);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('goes back: restarts the level when >10s in, otherwise jumps to the previous level', () => {
+        const manager = setup({ players: 4 });
+
+        // Fresh level (0s in): "back" at index 0 restarts the current level.
+        manager.goToPreviousLevel();
+        expect(manager.getState().currentLevelIndex).toBe(0);
+        expect(manager.getState().timeLeftInLevel).toBe(900);
+
+        manager.goToNextLevel(); // now on level 2
+        manager.setTimeLeftInLevel(895); // 5s into level 2 (< 10s)
+
+        manager.goToPreviousLevel();
+        expect(manager.getState().currentLevelIndex).toBe(0);
+        expect(manager.getState().timeLeftInLevel).toBe(900);
+
+        // >10s into a level: restart it instead of jumping back.
+        manager.goToNextLevel();
+        manager.setTimeLeftInLevel(870); // 30s in
+        manager.goToPreviousLevel();
+        expect(manager.getState().currentLevelIndex).toBe(1);
+        expect(manager.getState().timeLeftInLevel).toBe(900);
+    });
+
+    it('setTimeLeftInLevel clamps to [0, level duration]', () => {
+        const manager = setup({ players: 4 });
+        manager.setTimeLeftInLevel(300);
+        expect(manager.getState().timeLeftInLevel).toBe(300);
+        manager.setTimeLeftInLevel(-5);
+        expect(manager.getState().timeLeftInLevel).toBe(0);
+        manager.setTimeLeftInLevel(10_000);
+        expect(manager.getState().timeLeftInLevel).toBe(900);
+    });
+
+    it('auto-pauses when the final level runs out', () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+        try {
+            vi.setSystemTime(0);
+            const manager = new TournamentManager();
+            manager.initialize(
+                fakeWindow(),
+                [{ smallBlind: 100, bigBlind: 200, duration: 900 }], // single level
+                makePlayers(4),
+                9,
+                'Test Tournament',
+                true, true, false,
+                10000,
+                [],
+                { entryFee: 50, currency: 'EUR', structureId: 1, structureName: 'Turbo' },
+            );
+            manager.randomizeSeating();
+            manager.startTimer();
+            vi.advanceTimersByTime(900_000 + 1_000);
+
+            const state = manager.getState();
+            expect(state.isPaused).toBe(true);
+            expect(state.timeLeftInLevel).toBe(0);
+            expect(state.elapsedTime).toBe(900);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('resumes cleanly after a pause, counting only the running segments', () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+        try {
+            vi.setSystemTime(0);
+            const manager = setup({ players: 4 });
+            manager.startTimer();
+            vi.advanceTimersByTime(15_000);
+            manager.pauseTimer();
+            expect(manager.getState().elapsedTime).toBe(15);
+
+            // 60s of wall-clock pause time must not count toward the tournament.
+            vi.advanceTimersByTime(60_000);
+            manager.startTimer();
+            vi.advanceTimersByTime(3_000);
+
+            const state = manager.getState();
+            expect(state.elapsedTime).toBe(18);
+            expect(state.timeLeftInLevel).toBe(882);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+});
