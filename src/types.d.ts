@@ -95,6 +95,9 @@ export interface PlayerHistoryRow {
     playtime_sec: number;
     prize: number;
     entry_fee: number;
+    // Snapshot taken at tournament creation — never re-label history with the
+    // current settings currency.
+    currency: string;
 }
 
 export interface PlayerProfileData {
@@ -102,12 +105,15 @@ export interface PlayerProfileData {
     stats: {
         tournaments: number;
         total_playtime: number;
+        // Raw SQL sum across all currencies — kept for sign-color logic only;
+        // per-currency totals below are the display source.
         total_earnings: number;
         best_place: number | null;
         wins: number;
         cashes: number;
     };
     history: PlayerHistoryRow[];
+    earnings_by_currency: { currency: string; total: number }[];
 }
 
 export type SeatLocation =
@@ -182,6 +188,9 @@ export interface TournamentState {
     elapsedTime: number;
     prizes: Prize[];
     entryFee?: number;
+    // Currency snapshot taken at tournament creation — format money with it,
+    // not the current settings currency.
+    currency?: string;
 }
 
 declare global {

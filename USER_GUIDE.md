@@ -57,7 +57,7 @@ Click **Create Tournament**. Players start **unassigned** — they aren't seated
 
 ## 3. Seating players
 
-Open **Players** on the running tournament card (the *Manage Players* window).
+Open **Players** on the running tournament card (the *Manage Players* panel of the main control window).
 
 - Click **Randomize** to seat all unassigned players across tables automatically.
 - Or **drag** an unassigned player onto any empty seat to place them manually.

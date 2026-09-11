@@ -26,7 +26,7 @@ const navLinkClass = (active: boolean) =>
 const AppContent: React.FC = () => {
     const location = useLocation();
     const { t } = useSettings();
-    const isStructureEditor = location.pathname === '/structure-editor' || location.pathname.includes('structure-editor');
+    const isStructureEditor = location.pathname.includes('structure-editor');
     const isProjector = location.pathname === '/projector';
 
     return (

@@ -47,8 +47,18 @@ const StructureEditor: React.FC = () => {
                         setEditId(struct.id!);
                         setStructureName(struct.name);
                         setStartingChips(struct.starting_chips);
-                        const parsedLevels = JSON.parse(struct.data) as BlindLevel[];
-                        setLevels(parsedLevels.map(lvl => ({ ...lvl, _key: newKey() })));
+                        // Normalize: older structures may lack `ante` (JSON.stringify drops the key
+                        // when it was never set) — an undefined ante would render the
+                        // number input uncontrolled.
+                        const parsedLevels = (JSON.parse(struct.data) as BlindLevel[]).map(lvl => ({
+                            smallBlind: lvl.smallBlind ?? 0,
+                            bigBlind: lvl.bigBlind ?? 0,
+                            ante: lvl.ante ?? 0,
+                            duration: lvl.duration ?? 0,
+                            isBreak: !!lvl.isBreak,
+                            _key: newKey()
+                        }));
+                        setLevels(parsedLevels);
                     } else {
                         // Stale id (structure deleted while this window was
                         // opening): say so instead of silently degrading to
@@ -82,7 +92,7 @@ const StructureEditor: React.FC = () => {
 
         const newSb = referenceLevel ? referenceLevel.smallBlind * 2 : 25;
         const newBb = referenceLevel ? referenceLevel.bigBlind * 2 : 50;
-        const newAnte = referenceLevel ? referenceLevel.ante : 0;
+        const newAnte = referenceLevel ? (referenceLevel.ante ?? 0) : 0;
         const lastLevel = levels.length > 0 ? levels[levels.length - 1] : null;
         const newDuration = lastLevel ? lastLevel.duration : 15;
 

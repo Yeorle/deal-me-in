@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Prize, StandingRow } from '../types';
 import { useSettings } from '../i18n/useSettings';
-import { formatDuration } from '../utils/format';
+import { formatDuration, formatCurrencyWith } from '../utils/format';
 import { placeLabel } from '../utils/place';
 import { mediaUrl } from '../utils/media';
 import { defaultAvatar } from '../utils/avatar';
@@ -14,11 +14,14 @@ interface FinalizeStandingsModalProps {
 }
 
 const FinalizeStandingsModal: React.FC<FinalizeStandingsModalProps> = ({ isOpen, onClose, onFinalized }) => {
-    const { t, formatCurrency } = useSettings();
+    const { t, language, currency: settingsCurrency } = useSettings();
     const [survivors, setSurvivors] = useState<StandingRow[]>([]);
     const [eliminated, setEliminated] = useState<StandingRow[]>([]);
     const [prizes, setPrizes] = useState<Prize[]>([]);
     const [entryFee, setEntryFee] = useState(0);
+    // The tournament's currency snapshot — displayed money must not follow
+    // the live settings currency.
+    const [currency, setCurrency] = useState<string | null>(null);
     const [isSaving, setIsSaving] = useState(false);
 
     useEffect(() => {
@@ -40,6 +43,7 @@ const FinalizeStandingsModal: React.FC<FinalizeStandingsModalProps> = ({ isOpen,
             setEliminated(rows.filter(r => !r.isSurvivor).sort((a, b) => a.place - b.place));
             setPrizes(state.prizes || []);
             setEntryFee(state.entryFee || 0);
+            setCurrency(state.currency ?? null);
         };
         const open = async () => {
             try {
@@ -130,8 +134,8 @@ const FinalizeStandingsModal: React.FC<FinalizeStandingsModalProps> = ({ isOpen,
                     </div>
                 </td>
                 <td className="px-4 py-2.5 tabular text-ink-soft">{formatDuration(row.playtimeSec)}</td>
-                <td className="px-4 py-2.5 tabular text-ink-soft text-right">{formatCurrency(prize)}</td>
-                <td className={`px-4 py-2.5 tabular text-right font-medium ${earningsClass(earnings)}`}>{formatCurrency(earnings)}</td>
+                <td className="px-4 py-2.5 tabular text-ink-soft text-right">{formatCurrencyWith(prize, currency ?? settingsCurrency, language)}</td>
+                <td className={`px-4 py-2.5 tabular text-right font-medium ${earningsClass(earnings)}`}>{formatCurrencyWith(earnings, currency ?? settingsCurrency, language)}</td>
                 <td className="px-3 py-2.5 w-20 text-right">
                     {opts.reorderIndex !== undefined && (
                         <div className="inline-flex gap-1">

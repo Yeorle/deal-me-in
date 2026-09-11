@@ -16,11 +16,11 @@ vi.mock('../electron/db', () => ({
     createTournament: vi.fn(() => ({ lastInsertRowid: 1 })),
     updateTournamentState: vi.fn(),
     archiveTournament: vi.fn(),
-    saveTournamentResults: vi.fn(),
+    finalizeTournament: vi.fn(),
 }));
 
 import { TournamentManager, shuffle, Player, Prize } from '../electron/tournament';
-import { archiveTournament, saveTournamentResults, updateTournamentState, getTournamentById, getRunningTournament } from '../electron/db';
+import { archiveTournament, finalizeTournament, updateTournamentState, getTournamentById, getRunningTournament } from '../electron/db';
 
 function fakeWindow(): BrowserWindow {
     return {
@@ -101,6 +101,34 @@ describe('seating', () => {
         // Balanced 5/5, not 9/1.
         expect(tableCounts(manager)).toEqual([5, 5]);
     });
+
+    it('seatPlayer: manual placement, occupied-seat and unknown-target refusal', () => {
+        const manager = setup({ players: 10, playersPerTable: 5, autoMerge: false, autoBalance: false });
+        // Un-bust someone to get an unassigned player.
+        manager.bustPlayer(1);
+        manager.unbustPlayer(1);
+        expect(manager.getState().unassignedPlayers.map(p => p.id)).toEqual([1]);
+
+        // Unknown table → no-op.
+        manager.seatPlayer(1, 99, 1);
+        expect(manager.getState().unassignedPlayers).toHaveLength(1);
+        // Occupied seat → refused.
+        const occupied = manager.getState().tables[0].seats.find(s => s.player)!;
+        manager.seatPlayer(1, 1, occupied.seatNumber);
+        expect(manager.getState().unassignedPlayers).toHaveLength(1);
+        expect(manager.getState().tables[0].seats.find(s => s.seatNumber === occupied.seatNumber)!.player!.id).not.toBe(1);
+        // Empty seat (wherever the bust left it — the shuffle decides the table)
+        // → seated.
+        const empty = manager.getState().tables
+            .flatMap(t => t.seats.filter(s => !s.player).map(s => ({ tableNumber: t.tableNumber, seatNumber: s.seatNumber })))
+            .at(0)!;
+        manager.seatPlayer(1, empty.tableNumber, empty.seatNumber);
+        const state = manager.getState();
+        expect(state.unassignedPlayers).toHaveLength(0);
+        expect(state.tables
+            .find(t => t.tableNumber === empty.tableNumber)!
+            .seats.find(s => s.seatNumber === empty.seatNumber)!.player!.id).toBe(1);
+    });
 });
 
 describe('bust / unbust', () => {
@@ -127,6 +155,26 @@ describe('bust / unbust', () => {
         expect(state.bustedPlayers.map(p => p.id)).toEqual([3]);
         expect(state.unassignedPlayers).toHaveLength(0);
         expect(state.playersRemaining).toBe(9);
+    });
+
+    it('unbusting clears the recorded playtime so a re-bust records fresh time', () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+        try {
+            vi.setSystemTime(0);
+            const manager = setup({ players: 5, playersPerTable: 9, autoMerge: false, autoBalance: false });
+            manager.startTimer();
+            vi.advanceTimersByTime(10_000);
+            manager.bustPlayer(2);   // playtime 10s
+            manager.unbustPlayer(2); // bustElapsed entry must be deleted
+            manager.startTimer();
+            vi.advanceTimersByTime(10_000); // total elapsed now 20s
+            manager.bustPlayer(2);
+            const playtime = manager.getStandings().find(r => r.playerId === 2)!.playtimeSec;
+            // Without the bustElapsed cleanup this would still read the stale 10s.
+            expect(playtime).toBe(20);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });
 
@@ -163,6 +211,38 @@ describe('auto-merge', () => {
         // Health check must not immediately merge the fresh table away:
         // 9 seated + 1 unassigned = 10 > 9 seats.
         expect(manager.getState().tables.length).toBeGreaterThan(1);
+    });
+
+    it('measures merge capacity from actual seat counts after a mid-tournament size change', () => {
+        const manager = new TournamentManager();
+        manager.initialize(
+            fakeWindow(),
+            [{ smallBlind: 100, bigBlind: 200, duration: 900 }],
+            makePlayers(10),
+            5,
+            'Test Tournament',
+            true, true, false,
+            10000,
+            [],
+            { entryFee: 50, currency: 'EUR', structureId: 1, structureName: 'Turbo' },
+        );
+        manager.randomizeSeating();
+        expect(tableCounts(manager)).toEqual([5, 5]);
+
+        // One unassigned player makes randomizeSeating adopt playersPerTable 9
+        // while the existing 5-seat tables stay in place.
+        manager.bustPlayer(1);
+        manager.unbustPlayer(1);
+        manager.randomizeSeating(9);
+        expect(tableCounts(manager)).toEqual([5, 5]);
+
+        // The old formula assumed (2-1)*9 = 9 spare seats and merged, parking
+        // 4 players in the CRITICAL fallback. The remaining table really has
+        // 5 seats for 9 actives — so no merge, and nobody is stranded.
+        manager.bustPlayer(2);
+        const state = manager.getState();
+        expect(state.unassignedPlayers).toHaveLength(0);
+        expect(seatedCount(manager)).toBe(9);
     });
 });
 
@@ -228,10 +308,10 @@ describe('standings and prizes', () => {
         // Operator says player 4 beat player 3.
         const archivedId = manager.finalize([4, 3]);
         expect(archivedId).toBe(1);
-        expect(archiveTournament).toHaveBeenCalledWith(1);
-        expect(saveTournamentResults).toHaveBeenCalledTimes(1);
+        // finalize persists results and archives atomically in one db call.
+        expect(finalizeTournament).toHaveBeenCalledTimes(1);
 
-        const [tournamentId, rows] = vi.mocked(saveTournamentResults).mock.calls[0];
+        const [tournamentId, rows] = vi.mocked(finalizeTournament).mock.calls[0];
         expect(tournamentId).toBe(1);
         const byPlace = new Map(rows.map(r => [r.place, r]));
         expect(byPlace.get(1)!.player_id).toBe(4);
@@ -253,7 +333,7 @@ describe('standings and prizes', () => {
         const manager = setup({ players: 3, playersPerTable: 9, prizes });
         const archivedId = manager.finalize([]); // no operator input at all
         expect(archivedId).toBe(1);
-        const [, rows] = vi.mocked(saveTournamentResults).mock.calls[0];
+        const [, rows] = vi.mocked(finalizeTournament).mock.calls[0];
         expect(rows).toHaveLength(3);
         expect(new Set(rows.map(r => r.place))).toEqual(new Set([1, 2, 3]));
     });
@@ -314,6 +394,32 @@ describe('timer / elapsed time', () => {
         const manager = new TournamentManager();
         manager.toggleTimer();
         expect(manager.getState().isPaused).toBe(true);
+    });
+
+    it('refuses to restart a finished tournament (final level exhausted)', () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+        try {
+            vi.setSystemTime(0);
+            const manager = setup({ players: 4, playersPerTable: 9 });
+            manager.startTimer();
+            // Both 900s levels exhausted → the final-level branch auto-pauses.
+            vi.setSystemTime(1_800_000);
+            vi.advanceTimersByTime(250);
+            expect(manager.getState().isPaused).toBe(true);
+            expect(manager.getState().timeLeftInLevel).toBe(0);
+            const elapsed = manager.getState().elapsedTime;
+
+            // A stray start (e.g. the finalize modal's cleanup racing an
+            // operator click) must not reconcile wall-clock time into
+            // elapsedTime while the display sits frozen at 0.
+            vi.setSystemTime(60_000_000);
+            manager.startTimer();
+            vi.advanceTimersByTime(1000);
+            expect(manager.getState().isPaused).toBe(true);
+            expect(manager.getState().elapsedTime).toBe(elapsed);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });
 
@@ -380,6 +486,49 @@ describe('seating edge cases', () => {
         }
         expect(seatedCount(manager)).toBe(10);
     });
+
+    it('ignores a non-integer playersPerTable instead of stranding everyone', () => {
+        const manager = new TournamentManager();
+        manager.initialize(
+            fakeWindow(),
+            [{ smallBlind: 100, bigBlind: 200, duration: 900 }],
+            makePlayers(10),
+            9,
+            'Test Tournament',
+            true, true, false,
+            10000,
+            [],
+            { entryFee: 50, currency: 'EUR', structureId: 1, structureName: 'Turbo' },
+        );
+        // IPC input is not trusted — a fractional size must fall back to the
+        // existing value, not clear unassignedPlayers and then bail.
+        manager.randomizeSeating(4.5);
+        const state = manager.getState();
+        expect(state.unassignedPlayers).toHaveLength(0);
+        expect(seatedCount(manager)).toBe(10);
+        expect(state.playersRemaining).toBe(10);
+    });
+
+    it('first seating does not resurrect players removed while unassigned', () => {
+        const manager = new TournamentManager();
+        manager.initialize(
+            fakeWindow(),
+            [{ smallBlind: 100, bigBlind: 200, duration: 900 }],
+            makePlayers(10),
+            9,
+            'Test Tournament',
+            true, true, false,
+            10000,
+            [],
+            { entryFee: 50, currency: 'EUR', structureId: 1, structureName: 'Turbo' },
+        );
+        manager.removePlayerFromTournament(1); // soft-deleted before seating
+        manager.randomizeSeating();
+        const state = manager.getState();
+        // totalEntries - bustedPlayers.length would re-inflate this to 10.
+        expect(state.playersRemaining).toBe(9);
+        expect(seatedCount(manager)).toBe(9);
+    });
 });
 
 describe('removePlayerFromTournament (delete while running)', () => {
@@ -398,9 +547,20 @@ describe('removePlayerFromTournament (delete while running)', () => {
         expect(standings).toHaveLength(4);
 
         manager.finalize(standings.filter(r => r.isSurvivor).map(r => r.playerId));
-        const [, rows] = vi.mocked(saveTournamentResults).mock.calls.at(-1)!;
+        const [, rows] = vi.mocked(finalizeTournament).mock.calls.at(-1)!;
         expect(rows.find(r => r.player_id === 1)).toBeUndefined();
         expect(rows).toHaveLength(4);
+    });
+
+    it('removing an already-busted player does not decrement playersRemaining twice', () => {
+        const manager = setup({ players: 5, playersPerTable: 9, autoMerge: false, autoBalance: false });
+        manager.bustPlayer(2);
+        expect(manager.getState().playersRemaining).toBe(4);
+
+        // The busted list is where their trace lives — dropping it must not
+        // count the bust again.
+        manager.removePlayerFromTournament(2);
+        expect(manager.getState().playersRemaining).toBe(4);
     });
 });
 
@@ -481,6 +641,35 @@ describe('state hydration hardening', () => {
         expect(state.totalEntries).toBe(0);
         expect(state.playersRemaining).toBe(0);
     });
+
+    it('clamps a corrupt playersPerTable restored from a snapshot (0 → 9)', () => {
+        const manager = setup({ players: 10, playersPerTable: 5, autoMerge: false, autoBalance: false });
+        manager.bustPlayer(1);
+        // Corrupt the persisted snapshot the way a hand-edit would — `??`
+        // alone only catches null/undefined, not 0.
+        const savedState = vi.mocked(updateTournamentState).mock.calls.at(-1)![1];
+        const corrupt = JSON.parse(JSON.stringify(savedState));
+        corrupt.playersPerTable = 0;
+        vi.mocked(getTournamentById).mockImplementationOnce(() => ({
+            id: 1,
+            name: 'Test Tournament',
+            status: 'running',
+            state: JSON.stringify(corrupt),
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any));
+        manager.switchTournament(1);
+
+        // unbust → ensureSeatCapacity would add 0-seat tables forever without
+        // the clamp (the loop never gains empty seats).
+        manager.unbustPlayer(1);
+        const state = manager.getState();
+        expect(state.unassignedPlayers.map(p => p.id)).toEqual([1]);
+        for (const table of state.tables) {
+            expect(table.seats.length).toBeGreaterThan(0);
+        }
+        manager.randomizeSeating();
+        expect(seatedCount(manager)).toBe(10);
+    });
 });
 
 describe('updatePlayerInfo (roster edit while running)', () => {
@@ -525,7 +714,7 @@ describe('state persistence round-trip', () => {
             expect(manager.getState().playersRemaining).toBe(4);
 
             manager.finalize(manager.getStandings().filter(r => r.isSurvivor).map(r => r.playerId));
-            const [, rows] = vi.mocked(saveTournamentResults).mock.calls.at(-1)!;
+            const [, rows] = vi.mocked(finalizeTournament).mock.calls.at(-1)!;
             expect(rows.find(r => r.player_id === 2)!.playtime_sec).toBe(30);
         } finally {
             vi.useRealTimers();
@@ -543,7 +732,7 @@ describe('reset (archive without results)', () => {
 
         expect(archiveTournament).toHaveBeenCalledWith(1);
         // Unlike finalize(), the stop path records no per-player results.
-        expect(saveTournamentResults).not.toHaveBeenCalled();
+        expect(finalizeTournament).not.toHaveBeenCalled();
 
         const state = manager.getState();
         expect(state.isActive).toBe(false);

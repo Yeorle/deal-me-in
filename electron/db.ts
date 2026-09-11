@@ -8,6 +8,10 @@ let db: Database.Database | undefined;
 export function initDB() {
   const dbPath = path.join(app.getPath('userData'), 'poker_manager.db');
   console.log('Initializing database at:', dbPath);
+  // Remember whether the DB file is brand new: an EXISTING (but empty) database
+  // is the result of a deliberate empty-backup import and must NOT be re-seeded
+  // with demo rows on the next launch.
+  const isNewDatabase = !fs.existsSync(dbPath);
   // Statement logging is dev-only: in production the ~1/sec state save would
   // log a multi-KB UPDATE line forever.
   db = new Database(dbPath, { verbose: app.isPackaged ? undefined : console.log });
@@ -82,9 +86,11 @@ export function initDB() {
     migrateSchema(db!);
   })();
 
-  // Seed default data if empty
+// Seed default data — only on a brand-new database. An existing-but-empty
+  // database means the user imported an intentionally empty backup: re-seeding
+  // would resurrect demo rows over their choice.
   const playerCount = db.prepare('SELECT COUNT(*) as count FROM Players').get() as { count: number };
-  if (playerCount.count === 0) {
+  if (isNewDatabase && playerCount.count === 0) {
     const insertPlayer = db.prepare('INSERT INTO Players (name, nickname, email) VALUES (?, ?, ?)');
     const players = [
       ['Daniel Negreanu', 'Kid Poker', 'daniel@example.com'],
@@ -102,8 +108,8 @@ export function initDB() {
     console.log('Seeded default players.');
   }
 
-  const structureCount = db.prepare('SELECT COUNT(*) as count FROM Structures').get() as { count: number };
-  if (structureCount.count === 0) {
+const structureCount = db.prepare('SELECT COUNT(*) as count FROM Structures').get() as { count: number };
+  if (isNewDatabase && structureCount.count === 0) {
     const insertStructure = db.prepare('INSERT INTO Structures (name, starting_chips, data) VALUES (?, ?, ?)');
     const demoLevels = [
       { smallBlind: 100, bigBlind: 200, ante: 0, duration: 15 },
@@ -182,11 +188,6 @@ export function saveStructure(structure: { name: string; starting_chips: number;
 export function getStructures() {
   const stmt = getDB().prepare('SELECT * FROM Structures ORDER BY id');
   return stmt.all();
-}
-
-export function getPlayer(id: number) {
-  const stmt = getDB().prepare('SELECT * FROM Players WHERE id = ?');
-  return stmt.get(id);
 }
 
 // Best-effort file removal — a missing file is fine, anything else is logged.
@@ -349,7 +350,7 @@ export function getTournamentById(id: number) {
 
 export function archiveTournament(id: number) {
   const stmt = getDB().prepare(`
-        UPDATE Tournaments 
+        UPDATE Tournaments
         SET status = 'archived', end_date = datetime('now', 'localtime')
         WHERE id = ?
     `);
@@ -394,19 +395,28 @@ export interface TournamentResultInput {
   entry_fee: number;
 }
 
-// Replace any existing results for the tournament, then insert the new set.
-export function saveTournamentResults(tournamentId: number, results: TournamentResultInput[]) {
+// Atomically write final results AND archive the tournament. Doing these as
+// two separate writes would leave a 'running' row with result rows behind if
+// the process crashed in between — the app would resume a finished tournament
+// on the next launch. Replaces any pre-existing results (idempotent re-finalize).
+export function finalizeTournament(tournamentId: number, results: TournamentResultInput[]) {
   const database = getDB();
   const del = database.prepare('DELETE FROM TournamentResults WHERE tournament_id = ?');
   const ins = database.prepare(`
         INSERT INTO TournamentResults (tournament_id, player_id, place, playtime_sec, prize, entry_fee)
         VALUES (@tournament_id, @player_id, @place, @playtime_sec, @prize, @entry_fee)
     `);
+  const archive = getDB().prepare(`
+        UPDATE Tournaments
+        SET status = 'archived', end_date = datetime('now', 'localtime')
+        WHERE id = ?
+    `);
   database.transaction(() => {
     del.run(tournamentId);
     for (const r of results) {
       ins.run({ tournament_id: tournamentId, ...r });
     }
+    archive.run(tournamentId);
   })();
 }
 
@@ -447,14 +457,26 @@ export function getPlayerProfile(id: number) {
     `).get(id);
 
   const history = getDB().prepare(`
-        SELECT r.tournament_id, t.name, t.start_date, r.place, r.playtime_sec, r.prize, r.entry_fee
+        SELECT r.tournament_id, t.name, t.start_date, r.place, r.playtime_sec, r.prize, r.entry_fee, t.currency
         FROM TournamentResults r
         JOIN Tournaments t ON t.id = r.tournament_id
         WHERE r.player_id = ?
         ORDER BY t.start_date DESC
     `).all(id);
 
-  return { player, stats, history };
+  // Earnings mix currencies once the operator changes the settings currency
+  // between tournaments — every tournament snapshots its currency at creation,
+  // so the aggregate must be grouped per currency instead of summed blindly.
+  const earningsByCurrency = getDB().prepare(`
+        SELECT t.currency, COALESCE(SUM(r.prize - r.entry_fee), 0) AS total
+        FROM TournamentResults r
+        JOIN Tournaments t ON t.id = r.tournament_id
+        WHERE r.player_id = ?
+        GROUP BY t.currency
+        ORDER BY COUNT(*) DESC, t.currency ASC
+    `).all(id);
+
+  return { player, stats, history, earnings_by_currency: earningsByCurrency };
 }
 
 // ---------------------------------------------------------------------------

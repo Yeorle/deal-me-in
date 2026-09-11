@@ -67,6 +67,25 @@ function broadcastToAllWindows(channel: string, payload?: unknown) {
   }
 }
 
+// After a backup import the old renderers stay alive until their reload lands
+// (1.5 s, so the success notice is visible). During that window a stray
+// Bust/Stop/Finalize click would mutate the freshly imported tournament and
+// be persisted by the next broadcast — freeze input until the reload swaps
+// in a fresh renderer.
+function freezeAndReloadAllWindows() {
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed()) w.setEnabled(false)
+  }
+  setTimeout(() => {
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (!w.isDestroyed()) {
+        w.setEnabled(true)
+        w.webContents.reload()
+      }
+    }
+  }, 1500)
+}
+
 function createWindow() {
   win = new BrowserWindow({
     icon: path.join(process.env.VITE_PUBLIC, 'logo.png'),
@@ -140,10 +159,25 @@ app.whenReady().then(() => {
 
 
   ipcMain.handle('db:add-player', (_event, player) => {
+    let importedPhotoPath: string | null = null
     if (player.photoPath) {
       player.photo_path = importFileToUserData(player.photoPath, 'photos');
+      importedPhotoPath = player.photo_path
     }
-    return addPlayer(player)
+    try {
+      return addPlayer(player)
+    } catch (e) {
+      // The insert never landed — don't orphan the just-imported file
+      // (db:update-player below does the same cleanup).
+      if (importedPhotoPath) {
+        try {
+          fs.unlinkSync(importedPhotoPath)
+        } catch {
+          // best-effort cleanup
+        }
+      }
+      throw e
+    }
   })
 
   ipcMain.handle('db:update-player', (_event, player) => {
@@ -289,11 +323,7 @@ app.whenReady().then(() => {
       // singleton from the imported rows right away, then reload every window
       // after a short delay so the renderer can show its success notice.
       tournamentManager.reloadFromDb()
-      setTimeout(() => {
-        for (const w of BrowserWindow.getAllWindows()) {
-          if (!w.isDestroyed()) w.webContents.reload()
-        }
-      }, 1500)
+      freezeAndReloadAllWindows()
       return { ok: true, backupPath: safetyBackupPath }
     } catch (e) {
       if (e instanceof MediaExtractionError) {
@@ -302,11 +332,7 @@ app.whenReady().then(() => {
         // tick's save() overwrite the freshly imported rows. Rehydrate from the
         // imported DB instead, keep the clock paused, and reload the windows.
         tournamentManager.reloadFromDb()
-        setTimeout(() => {
-          for (const w of BrowserWindow.getAllWindows()) {
-            if (!w.isDestroyed()) w.webContents.reload()
-          }
-        }, 1500)
+        freezeAndReloadAllWindows()
         return { ok: false, error: e.message }
       }
       // Nothing was written (validation runs before any DB/media write), so

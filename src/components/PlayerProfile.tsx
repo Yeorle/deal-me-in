@@ -2,14 +2,14 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { PlayerProfileData } from '../types';
 import { useSettings } from '../i18n/useSettings';
-import { formatEuropeanDateTime, formatDuration } from '../utils/format';
+import { formatEuropeanDateTime, formatDuration, formatCurrencyWith } from '../utils/format';
 import { placeLabel } from '../utils/place';
 import { mediaUrl } from '../utils/media';
 import { defaultAvatar } from '../utils/avatar';
 
 
 const PlayerProfile: React.FC = () => {
-    const { t, formatCurrency } = useSettings();
+    const { t, formatCurrency, language } = useSettings();
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
 
@@ -197,7 +197,16 @@ const PlayerProfile: React.FC = () => {
                         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
                             <Stat label={t('profile.tournamentsPlayed')} value={String(stats.tournaments)} />
                             <Stat label={t('profile.totalPlaytime')} value={formatDuration(stats.total_playtime)} />
-                            <Stat label={t('profile.totalEarnings')} value={formatCurrency(stats.total_earnings)} valueClass={stats.total_earnings > 0 ? 'text-accent' : stats.total_earnings < 0 ? 'text-danger' : 'text-ink'} />
+                            <Stat
+                                label={t('profile.totalEarnings')}
+                                // Per-currency totals: tournaments snapshot their currency
+                                // at creation, so a single labeled sum would be wrong once
+                                // the settings currency changed between tournaments.
+                                value={(data.earnings_by_currency ?? []).length > 0
+                                    ? data.earnings_by_currency.map(e => formatCurrencyWith(e.total, e.currency, language)).join('  ·  ')
+                                    : formatCurrency(0)}
+                                valueClass={stats.total_earnings > 0 ? 'text-accent' : stats.total_earnings < 0 ? 'text-danger' : 'text-ink'}
+                            />
                             <Stat label={t('profile.bestFinish')} value={stats.best_place ? placeLabel(stats.best_place, t) : '-'} />
                             <Stat label={t('profile.wins')} value={String(stats.wins ?? 0)} />
                             <Stat label={t('profile.cashes')} value={String(stats.cashes ?? 0)} />
@@ -234,7 +243,8 @@ const PlayerProfile: React.FC = () => {
                                                     <td className="px-4 py-3 text-ink-soft tabular">{placeLabel(h.place, t)}</td>
                                                     <td className="px-4 py-3 text-ink-soft tabular">{formatDuration(h.playtime_sec)}</td>
                                                     <td className={`px-4 py-3 tabular text-right font-medium ${earnings > 0 ? 'text-accent' : earnings < 0 ? 'text-danger' : 'text-ink-muted'}`}>
-                                                        {formatCurrency(earnings)}
+                                                        {/* Row-level currency snapshot, not the current setting */}
+                                                        {formatCurrencyWith(earnings, h.currency, language)}
                                                     </td>
                                                 </tr>
                                             );
