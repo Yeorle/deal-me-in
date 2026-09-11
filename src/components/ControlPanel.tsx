@@ -326,10 +326,10 @@ const ControlPanel: React.FC = () => {
                     </div>
                 )}
 
-                // Before the first broadcast/fetch lands, timerState.id is undefined —
-                // without this gate the live tournament itself would appear
-                // under "Other running tournaments" and switching to it would
-                // needlessly pause its clock.
+                {/* Before the first broadcast/fetch lands, timerState.id is undefined —
+                    without this gate the live tournament itself would appear
+                    under "Other running tournaments" and switching to it would
+                    needlessly pause its clock. */}
                 {timerState.id != null && runningTournaments.filter(rt => rt.id !== timerState.id).length > 0 && (
                     <div className="mt-4 bg-surface border border-line rounded overflow-hidden">
                         <div className="px-5 py-3 border-b border-line text-micro uppercase text-ink-muted">
