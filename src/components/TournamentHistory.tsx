@@ -12,8 +12,12 @@ const TournamentHistory: React.FC = () => {
     const [deleteId, setDeleteId] = useState<number | null>(null);
 
     const load = async () => {
-        const rows = await window.api.getArchivedTournaments();
-        setTournaments(rows);
+        try {
+            const rows = await window.api.getArchivedTournaments();
+            setTournaments(rows);
+        } catch (e) {
+            console.error('Failed to load archived tournaments', e);
+        }
     };
 
     useEffect(() => {

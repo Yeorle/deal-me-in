@@ -68,6 +68,10 @@ const FinalizeStandingsModal: React.FC<FinalizeStandingsModalProps> = ({ isOpen,
     const prizeForPlace = (place: number) => prizes.find(p => p.place === place)?.amount ?? 0;
 
     const move = (index: number, dir: -1 | 1) => {
+        // No reordering while finalize is in flight — the order was already
+        // serialized into the IPC call, and moving rows now would desync the
+        // UI from what was actually saved if the finalize later fails.
+        if (isSaving) return;
         const target = index + dir;
         if (target < 0 || target >= survivors.length) return;
         const next = [...survivors];
@@ -134,14 +138,14 @@ const FinalizeStandingsModal: React.FC<FinalizeStandingsModalProps> = ({ isOpen,
                             <button
                                 type="button"
                                 onClick={() => move(opts.reorderIndex!, -1)}
-                                disabled={opts.reorderIndex === 0}
+                                disabled={isSaving || opts.reorderIndex === 0}
                                 title={t('finalize.moveUp')}
                                 className="px-1.5 py-0.5 rounded border border-line text-ink-muted hover:text-ink hover:bg-surface-sunken disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                             >↑</button>
                             <button
                                 type="button"
                                 onClick={() => move(opts.reorderIndex!, 1)}
-                                disabled={opts.reorderIndex === survivors.length - 1}
+                                disabled={isSaving || opts.reorderIndex === survivors.length - 1}
                                 title={t('finalize.moveDown')}
                                 className="px-1.5 py-0.5 rounded border border-line text-ink-muted hover:text-ink hover:bg-surface-sunken disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                             >↓</button>

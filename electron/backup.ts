@@ -356,6 +356,22 @@ export function exportAllData(targetFilePath: string): void {
   }
 }
 
+// Thrown when media files could not be extracted AFTER the DB swap already
+// committed. The caller must not resume the previously loaded in-memory
+// tournament state in this case — doing so would let the next tick's save()
+// overwrite the freshly imported rows. The singleton must be rehydrated from
+// the imported DB instead.
+export class MediaExtractionError extends Error {
+    readonly dbCommitted = true;
+    constructor(failedEntries: string[], safetyBackupPath: string) {
+        super(
+            `The database was imported, but ${failedEntries.length} media file(s) could not be ` +
+            `restored (${failedEntries.join(', ')}). Your previous data was saved to ${safetyBackupPath}.`
+        );
+        this.name = 'MediaExtractionError';
+    }
+}
+
 function parseJsonEntry(zip: AdmZip, entryName: string): unknown {
   const entry = zip.getEntry(entryName);
   if (!entry) {
@@ -399,13 +415,23 @@ export function importAllData(sourceFilePath: string): { safetyBackupPath: strin
 
   // Media extraction comes last: from here on the DB swap has committed, so
   // only a disk-level failure could leave media missing behind live
-  // references.
+  // references. Extract each file independently so one bad entry doesn't
+  // abort the rest; if any fail, report it — the DB swap has committed, so
+  // the caller must rehydrate rather than resume the old in-memory state.
+  const extractionFailures: string[] = [];
   for (const entry of zip.getEntries()) {
     const safe = sanitizeZipEntryName(entry.entryName);
     if (!safe) continue;
     const destDir = path.join(userDataDir, safe.folder);
-    fs.mkdirSync(destDir, { recursive: true });
-    fs.writeFileSync(path.join(destDir, safe.basename), entry.getData());
+    try {
+      fs.mkdirSync(destDir, { recursive: true });
+      fs.writeFileSync(path.join(destDir, safe.basename), entry.getData());
+    } catch {
+      extractionFailures.push(`${safe.folder}/${safe.basename}`);
+    }
+  }
+  if (extractionFailures.length > 0) {
+    throw new MediaExtractionError(extractionFailures, safetyBackupPath);
   }
 
   return { safetyBackupPath };

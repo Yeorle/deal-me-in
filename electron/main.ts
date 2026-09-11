@@ -4,7 +4,7 @@ import path from 'node:path'
 import fs from 'node:fs'
 import { initDB, getPlayers, addPlayer, saveStructure, getStructures, updatePlayer, deletePlayer, getStructure, updateStructure, deleteStructure, getArchivedTournaments, deleteTournament, getRunningTournaments, getSettings, setSetting, getTournamentResults, getPlayerProfile } from './db'
 import { tournamentManager, Player } from './tournament'
-import { exportAllData, importAllData } from './backup'
+import { exportAllData, importAllData, MediaExtractionError } from './backup'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -152,7 +152,20 @@ app.whenReady().then(() => {
       player.photo_path = importFileToUserData(player.photoPath, 'photos');
       importedPhotoPath = player.photo_path
     }
-    const result = updatePlayer(player)
+    let result
+    try {
+      result = updatePlayer(player)
+    } catch (e) {
+      // The write never landed — don't orphan the just-imported file.
+      if (importedPhotoPath) {
+        try {
+          fs.unlinkSync(importedPhotoPath)
+        } catch {
+          // best-effort cleanup
+        }
+      }
+      throw e
+    }
     // If the write didn't land (e.g. the player was soft-deleted elsewhere),
     // the just-imported file would otherwise be orphaned.
     if (importedPhotoPath && result.changes === 0) {
@@ -161,6 +174,17 @@ app.whenReady().then(() => {
       } catch {
         // best-effort cleanup
       }
+      return result
+    }
+    // The live tournament holds its own copies of player data; without this
+    // the broadcasts would keep re-saving the old name/photo path (a replaced
+    // photo file is unlinked by updatePlayer, so the old path now dangles).
+    if (result.changes > 0) {
+      tournamentManager.updatePlayerInfo(player.id, {
+        name: player.name,
+        nickname: player.nickname ?? null,
+        photo_path: player.photo_path ?? null,
+      })
     }
     return result
   })
@@ -272,6 +296,19 @@ app.whenReady().then(() => {
       }, 1500)
       return { ok: true, backupPath: safetyBackupPath }
     } catch (e) {
+      if (e instanceof MediaExtractionError) {
+        // The DB swap committed but some media files could not be extracted.
+        // The in-memory singleton is stale now: resuming it would let the next
+        // tick's save() overwrite the freshly imported rows. Rehydrate from the
+        // imported DB instead, keep the clock paused, and reload the windows.
+        tournamentManager.reloadFromDb()
+        setTimeout(() => {
+          for (const w of BrowserWindow.getAllWindows()) {
+            if (!w.isDestroyed()) w.webContents.reload()
+          }
+        }, 1500)
+        return { ok: false, error: e.message }
+      }
       // Nothing was written (validation runs before any DB/media write), so
       // restoring the clock we paused for the attempt is safe.
       if (wasRunning) tournamentManager.startTimer()
@@ -328,11 +365,24 @@ app.whenReady().then(() => {
   ipcMain.on('tournament:previous-level', () => tournamentManager.goToPreviousLevel());
 
   ipcMain.handle('tournament:create', (_event, { structureId, playerIds, maxPlayersPerTable, name, autoBalance, autoMerge, shuffleFinalTable, prizes, entryFee }) => {
+    // IPC input is not trusted: a non-positive table size makes the seating
+    // math degenerate (Math.ceil(n/0) = Infinity loops forever in doSeatPlayers).
+    if (!Number.isInteger(maxPlayersPerTable) || maxPlayersPerTable < 1) {
+      throw new Error('Invalid table size');
+    }
     const structure = getStructure(structureId) as { name: string; data: string; starting_chips: number } | undefined;
     if (!structure) throw new Error('Structure not found');
 
     // Parse levels from structure data
-    const rawLevels = JSON.parse(structure.data) as { smallBlind: number; bigBlind: number; ante?: number; duration: number }[];
+    let rawLevels: { smallBlind: number; bigBlind: number; ante?: number; duration: number }[];
+    try {
+      rawLevels = JSON.parse(structure.data);
+    } catch {
+      throw new Error('The selected structure\u2019s level data is corrupt — re-save the structure and try again');
+    }
+    if (!Array.isArray(rawLevels) || rawLevels.length === 0) {
+      throw new Error('The selected structure has no levels');
+    }
     const parsedData = rawLevels.map(level => ({
       ...level,
       duration: level.duration * 60
@@ -415,7 +465,10 @@ app.whenReady().then(() => {
     })
     hardenWindow(editorWin)
 
-    const hash = id ? `/structure-editor?id=${id}` : '/structure-editor';
+    // `window=1` tells the renderer this route lives in its own BrowserWindow, so
+    // its close buttons may call window.close() (vs navigate back when the same
+    // route is rendered inside the main window).
+    const hash = id ? `/structure-editor?id=${id}&window=1` : '/structure-editor?window=1';
 
     if (VITE_DEV_SERVER_URL) {
       editorWin.loadURL(`${VITE_DEV_SERVER_URL}#${hash}`)
@@ -428,4 +481,13 @@ app.whenReady().then(() => {
 
   // Try to restore active tournament
   tournamentManager.load();
+}).catch((e) => {
+  // A failure before ready (corrupt/locked DB, protocol registration, …)
+  // would otherwise be a silent unhandled rejection with no usable window.
+  console.error('Startup failed:', e)
+  dialog.showErrorBox(
+    'Deal Me In failed to start',
+    e instanceof Error ? e.message : String(e)
+  )
+  app.quit()
 })

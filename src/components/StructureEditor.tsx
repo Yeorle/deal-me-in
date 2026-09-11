@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useSettings } from '../i18n/useSettings';
 
 interface BlindLevel {
@@ -20,6 +20,11 @@ interface EditorLevel extends BlindLevel {
 const StructureEditor: React.FC = () => {
     const { t } = useSettings();
     const location = useLocation();
+    const navigate = useNavigate();
+    // The route is reachable both as a dedicated BrowserWindow (opened by the
+    // main process with ?window=1) and as a main-window route. window.close()
+    // in the main window would close the whole app window.
+    const [isDetachedWindow, setIsDetachedWindow] = useState(false);
     const [structureName, setStructureName] = useState('');
     const [startingChips, setStartingChips] = useState(1000);
     const [levels, setLevels] = useState<EditorLevel[]>([]);
@@ -32,6 +37,7 @@ const StructureEditor: React.FC = () => {
     useEffect(() => {
         const loadStructure = async () => {
             const searchParams = new URLSearchParams(location.search);
+            setIsDetachedWindow(searchParams.get('window') === '1');
             const idParam = searchParams.get('id');
             if (idParam) {
                 const id = parseInt(idParam, 10);
@@ -147,6 +153,9 @@ const StructureEditor: React.FC = () => {
             if (!lvl.isBreak && (lvl.smallBlind <= 0 || lvl.bigBlind <= 0 || lvl.bigBlind < lvl.smallBlind)) {
                 return t('editor.validationBlinds', { n: i + 1 });
             }
+            if (!lvl.isBreak && (lvl.ante ?? 0) < 0) {
+                return t('editor.validationAnte', { n: i + 1 });
+            }
         }
         return null;
     };
@@ -196,13 +205,15 @@ const StructureEditor: React.FC = () => {
     };
 
     const onClose = () => {
-        window.close();
+        if (isDetachedWindow) window.close();
+        else navigate(-1);
     };
 
     const onSaveAndClose = async () => {
         const success = await handleSave();
         if (success) {
-            window.close();
+            if (isDetachedWindow) window.close();
+            else navigate(-1);
         }
     };
 
