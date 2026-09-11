@@ -11,6 +11,20 @@ const Settings: React.FC = () => {
     const [importConfirmOpen, setImportConfirmOpen] = useState(false);
     const [backupBusy, setBackupBusy] = useState(false);
     const [backupStatus, setBackupStatus] = useState<BackupStatus>(null);
+    const [settingSaveFailed, setSettingSaveFailed] = useState(false);
+
+    // setLanguage/setAccentColor/setCurrency all await IPC — a failure must
+    // not be an unhandled rejection while the UI shows the new value as
+    // if it had persisted.
+    const updateSetting = async (action: () => Promise<void>) => {
+        setSettingSaveFailed(false);
+        try {
+            await action();
+        } catch (e) {
+            console.error('Failed to save setting', e);
+            setSettingSaveFailed(true);
+        }
+    };
 
     const handleExport = async () => {
         setBackupBusy(true);
@@ -78,6 +92,7 @@ const Settings: React.FC = () => {
     return (
         <div className="px-10 py-10 w-full max-w-3xl mx-auto">
             <h2 className="text-xl font-semibold tracking-tight mb-8">{t('settings.title')}</h2>
+            {settingSaveFailed && <p className="text-sm text-danger -mt-5 mb-5">{t('common.error')}</p>}
 
             <section className="bg-surface border border-line rounded p-5 mb-5">
                 <h3 className="text-sm font-medium text-ink mb-1">{t('settings.language')}</h3>
@@ -86,7 +101,7 @@ const Settings: React.FC = () => {
                     {languageOptions.map(opt => (
                         <button
                             key={opt.value}
-                            onClick={() => setLanguage(opt.value)}
+                            onClick={() => updateSetting(() => setLanguage(opt.value))}
                             className={`px-4 py-2 rounded text-sm font-medium border transition-colors ${
                                 language === opt.value
                                     ? 'bg-accent text-white border-accent'
@@ -109,7 +124,7 @@ const Settings: React.FC = () => {
                         return (
                             <button
                                 key={opt.value}
-                                onClick={() => setAccentColor(opt.value)}
+                                onClick={() => updateSetting(() => setAccentColor(opt.value))}
                                 className={`flex items-center gap-3 px-3 py-2.5 rounded border transition-colors text-left ${
                                     selected
                                         ? 'border-accent bg-accent-50'
@@ -134,7 +149,7 @@ const Settings: React.FC = () => {
                     {currencyOptions.map(opt => (
                         <button
                             key={opt.value}
-                            onClick={() => setCurrency(opt.value)}
+                            onClick={() => updateSetting(() => setCurrency(opt.value))}
                             className={`px-4 py-2.5 rounded text-sm font-medium border transition-colors text-left ${
                                 currency === opt.value
                                     ? 'border-accent bg-accent-50 text-ink'

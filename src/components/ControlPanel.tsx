@@ -90,6 +90,10 @@ const ControlPanel: React.FC = () => {
 
         window.api.getTournamentState().then(s => {
             if (!receivedBroadcast) handleStateUpdate(s);
+        }).catch(e => {
+            // Without this, a failed initial fetch silently leaves the panel
+            // on the "no tournament" default even when one is running.
+            console.error('Failed to load tournament state', e);
         });
         loadRunningTournaments();
 

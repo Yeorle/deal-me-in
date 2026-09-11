@@ -45,6 +45,54 @@ Severity levels:
 
 ---
 
+## Round 3 review (2026-09-11)
+
+A third full pass (all of `electron/`, `src/`, tests, configs, i18n parity — en/fr key
+sets and every `t()` key verified programmatically; duplicated cross-process types
+diffed). No critical or engine-correctness issues remain from rounds 1–2. Fixed in
+this round:
+
+- **ProjectorDesigner lost updates** — `update()` spread the context `projector`
+  object, and `setProjectorTheme` only persisted (no local state change), so two
+  interactions within one IPC round-trip reverted the first (e.g. toggle shadow,
+  then quickly outline). `setProjectorTheme` now applies an optimistic local
+  update; the designer's file inputs also reset `value` so re-picking the same
+  file fires `onChange`.
+- **PlayerProfile** — navigating to another `/players/:id` kept the previous
+  player's editable form mounted during the fetch (a Save in that window wrote
+  player A's data onto player B's row): the profile is now dropped when the id
+  changes. The cleanup effect no longer clears the "Saved" chip timer on photo
+  pick, preview object URLs are revoked via a single owner, and a failed reload
+  after a successful save no longer discards the saved data to the error page.
+- **ProjectorView** — the hand-rolled mm:ss split is clamped against negatives;
+  the two center/right column dividers now use the themed `--proj-ink-faint` var
+  instead of the fixed palette color.
+- **Error surfacing** — structure-delete failure shows an error in its modal;
+  a failed structure load in the editor no longer silently degrades to an empty
+  "new structure" form (duplicate-creation hazard); ControlPanel's initial state
+  fetch has a catch; TournamentCreator separates load errors from save errors
+  (and no longer permanently hides the validation hints); Settings surfaces
+  language/accent/currency write failures instead of unhandled rejections.
+- **Infra** — `tsconfig.json` now type-checks `tests/` (three pre-existing
+  errors surfaced and were fixed by bumping `lib` to ES2022) and
+  `tsconfig.node.json` covers `vitest.config.ts`; CI runs on pushes to all
+  branches; dead `controlPanel.deleteArchiveTitle_attr` key removed;
+  `Player.total_winnings` synced into `src/types.d.ts`; stale line-number
+  anchors in ARCHITECTURE.md replaced with symbol references.
+- **Tests added (48 → 54)** — `reset()` (archive-without-results), final-level
+  auto-pause, `goToNextLevel`/`goToPreviousLevel`/`setTimeLeftInLevel` (incl.
+  re-anchoring of the running clock), and resume-after-pause elapsed accounting.
+
+Known-accepted items (deliberately not changed): the finalize modal's standings
+can go stale if a player is busted from another window while it is open (the
+engine's unknown-id fallback makes this safe, order-only); the live prize view
+formats with the current app currency while finalize/history use the creation
+snapshot (adding the snapshot to `TournamentState` was judged not worth the
+cross-process type churn); the projector renders a zeroed board instead of a
+dedicated idle screen when no tournament is active.
+
+---
+
 ## 🔴 Critical
 
 ### C1. Un-busting after an auto-merge can deadlock the tournament

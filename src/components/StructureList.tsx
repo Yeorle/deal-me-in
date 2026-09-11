@@ -9,6 +9,7 @@ const StructureList: React.FC = () => {
     const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
     const [structureToDelete, setStructureToDelete] = useState<number | null>(null);
     const [hasConfirmedDelete, setHasConfirmedDelete] = useState(false);
+    const [deleteError, setDeleteError] = useState(false);
 
     const fetchStructures = async () => {
         try {
@@ -38,6 +39,7 @@ const StructureList: React.FC = () => {
     const confirmDelete = (id: number) => {
         setStructureToDelete(id);
         setHasConfirmedDelete(false);
+        setDeleteError(false);
         setIsDeleteModalOpen(true);
     };
 
@@ -50,6 +52,9 @@ const StructureList: React.FC = () => {
                 fetchStructures();
             } catch (error) {
                 console.error('Failed to delete structure:', error);
+                // The modal must not just sit there looking hung — say why
+                // nothing happened and leave it open for a retry.
+                setDeleteError(true);
             }
         }
     };
@@ -129,6 +134,10 @@ const StructureList: React.FC = () => {
                             />
                             {t('structureList.confirmDeletionCheckbox')}
                         </label>
+
+                        {deleteError && (
+                            <p className="text-xs text-danger mb-4">{t('common.error')}</p>
+                        )}
 
                         <div className="flex justify-end gap-2">
                             <button

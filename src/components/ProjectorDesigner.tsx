@@ -38,6 +38,8 @@ const ProjectorDesigner: React.FC = () => {
         kind: 'background' | 'logo',
     ) => {
         const file = e.target.files?.[0];
+        // Reset the input so re-picking the same file fires onChange again.
+        e.target.value = '';
         if (!file) return;
         const sourcePath = window.api.getPathForFile(file);
         if (!sourcePath) return;

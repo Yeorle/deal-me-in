@@ -25,6 +25,9 @@ const TournamentCreator: React.FC<TournamentCreatorProps> = ({ onClose, onSave }
     const [prizes, setPrizes] = useState<Prize[]>([{ place: 1, amount: 0 }]);
     const [entryFee, setEntryFee] = useState<number>(0);
     const [saveError, setSaveError] = useState<string | null>(null);
+    // Separate from saveError: a failed data load must not permanently hide
+    // the validation hints that explain why Create is disabled.
+    const [loadError, setLoadError] = useState<string | null>(null);
 
     useEffect(() => {
         const loadData = async () => {
@@ -40,7 +43,7 @@ const TournamentCreator: React.FC<TournamentCreatorProps> = ({ onClose, onSave }
         };
         loadData().catch(e => {
             console.error('Failed to load creator data', e);
-            setSaveError(t('common.error'));
+            setLoadError(t('common.error'));
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
@@ -52,6 +55,7 @@ const TournamentCreator: React.FC<TournamentCreatorProps> = ({ onClose, onSave }
     const handleSave = async () => {
         if (!selectedStructureId || !tournamentName.trim() || isCapacityError || isNoPlayers) return;
         setIsLoading(true);
+        setSaveError(null); // a previous failure must not stick after a retry
         try {
             // Assign each row its displayed place BEFORE dropping empty rows —
             // filtering first and renumbering would silently shift a lower
@@ -309,9 +313,9 @@ const TournamentCreator: React.FC<TournamentCreatorProps> = ({ onClose, onSave }
                 </div>
 
                 <div className="px-6 py-4 border-t border-line flex justify-end items-center gap-3">
-                    {saveError && <span className="text-danger text-xs mr-auto">{saveError}</span>}
-                    {!saveError && isNoPlayers && <span className="text-danger text-xs mr-auto">{t('creator.pleaseSelectPlayers')}</span>}
-                    {!saveError && !isNoPlayers && !selectedStructureId && <span className="text-danger text-xs mr-auto">{t('creator.pleaseSelectStructure')}</span>}
+                    {(saveError || loadError) && <span className="text-danger text-xs mr-auto">{saveError ?? loadError}</span>}
+                    {!saveError && !loadError && isNoPlayers && <span className="text-danger text-xs mr-auto">{t('creator.pleaseSelectPlayers')}</span>}
+                    {!saveError && !loadError && !isNoPlayers && !selectedStructureId && <span className="text-danger text-xs mr-auto">{t('creator.pleaseSelectStructure')}</span>}
                     <button
                         onClick={onClose}
                         className="px-4 py-2 rounded text-sm font-medium text-ink-muted hover:text-ink transition-colors"

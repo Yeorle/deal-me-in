@@ -127,6 +127,12 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                 await window.api.setSetting('currency', currency);
             },
             setProjectorTheme: async (theme) => {
+                // Optimistic local update: the DB write + `settings-update`
+                // broadcast round-trip is slower than two consecutive user
+                // interactions, and without this the second interaction would
+                // spread a stale `projector` object and silently revert the
+                // first change (e.g. toggle shadow, then quickly outline).
+                setSettings(prev => ({ ...prev, projector: theme }));
                 await window.api.setSetting('projectorTheme', JSON.stringify(theme));
             },
         };

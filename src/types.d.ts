@@ -4,6 +4,9 @@ export interface Player {
     nickname?: string;
     email?: string;
     photo_path?: string;
+    // Legacy DB column kept for cross-process type parity with
+    // electron/tournament.ts — never written or read.
+    total_winnings?: number;
 }
 
 export interface Structure {

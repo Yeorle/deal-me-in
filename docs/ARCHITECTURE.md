@@ -105,7 +105,7 @@ Key consequences:
 ### The tournament engine (`tournament.ts`)
 
 `TournamentManager` is instantiated once at the bottom of the file
-([tournament.ts:940](../electron/tournament.ts#L940)) and holds the entire live
+(`tournamentManager` in `electron/tournament.ts`) and holds the entire live
 tournament in private fields: `levels`, `tables` (each a list of `Seat`s with
 `player: Player | null`), `unassignedPlayers`, `bustedPlayers`, `prizes`, timer
 bookkeeping, and the `bustElapsed` map.
@@ -117,7 +117,7 @@ bookkeeping, and the `bustElapsed` map.
 3. `bustedPlayers[]` — eliminated. Seats have no "busted" flag; an empty seat is just empty, and "is this player out?" means "are they in `bustedPlayers`?". The *append order* of `bustedPlayers` is the finishing order (first out = last place).
 
 **Timer engine.** The clock is wall-clock anchored, not tick-counted
-([tournament.ts:263-341](../electron/tournament.ts#L263-L341)):
+(`startTimer`/`pauseTimer`/`tick` in `electron/tournament.ts`):
 
 - `startTimer()` records `segmentStartMs = Date.now()` plus the `timeLeftInLevel`/`elapsedTime` at that instant, then runs a 250 ms `setInterval`.
 - Each `tick()` recomputes both values from `Date.now() − segmentStartMs`, so a laggy or suspended interval never loses time.
@@ -130,7 +130,7 @@ re-anchor the timer if it is running. `goToPreviousLevel` has "media-player" sem
 more than 10 s into a level restarts the level; otherwise it jumps to the previous one.
 
 **Seating and table health.** `checkTableHealth()` runs after every bust/un-bust and
-applies, in priority order ([tournament.ts:577-618](../electron/tournament.ts#L577-L618)):
+applies, in priority order (`checkTableHealth()` in `electron/tournament.ts`):
 
 1. **Final-table shuffle** (if `shuffleFinalTable` and >1 table and all remaining players fit one table): gather all seated *and unassigned* players, shuffle, reseat everyone on table 1.
 2. **Auto-merge** (if `autoMerge`): if the field fits into N−1 tables, remove the last table and distribute its players into empty seats elsewhere, then recursively re-check.
@@ -324,5 +324,5 @@ Sound cues are bundled mp3s in `src/assets/sounds/`, played only in the primary 
 - `npm run dev` — Vite dev server + Electron with HMR for both processes.
 - `npm run build` — `tsc` (typecheck only) → `vite build` (renderer to `dist/`, main/preload to `dist-electron/` via `vite-plugin-electron`) → `electron-builder` (config in `electron-builder.json5`; artifacts under `release/<version>/`, git-ignored).
 - `npm run lint` — ESLint over the repo with `--max-warnings 0`.
-- **`better-sqlite3` is a native module**: it is declared `external` in the main-process Rollup options ([vite.config.ts:17](../vite.config.ts#L17)) and rebuilt against Electron's ABI by `@electron/rebuild`. Do not try to bundle it.
+- **`better-sqlite3` is a native module**: it is declared `external` in the main-process Rollup options (`vite.config.ts`) and rebuilt against Electron's ABI by `@electron/rebuild`. Do not try to bundle it.
 - The two TypeScript "projects" (`tsconfig.json` includes both `src/` and `electron/`; `tsconfig.node.json` covers the Vite config files) are why type declarations are duplicated across the process boundary — when changing a shared shape, update **both** `electron/tournament.ts` and `src/types.d.ts` (the `/edit-tournament-state` skill enforces this).
