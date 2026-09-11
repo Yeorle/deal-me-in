@@ -17,14 +17,19 @@ const TournamentResultsView: React.FC = () => {
 
     useEffect(() => {
         if (!id) return;
+        // Ignore a stale response when navigating quickly between tournaments.
+        let cancelled = false;
         window.api.getTournamentResults(Number(id)).then(d => {
+            if (cancelled) return;
             setData(d);
             setLoaded(true);
         }).catch(e => {
+            if (cancelled) return;
             console.error('Failed to load tournament results', e);
             setData(null);
             setLoaded(true);
         });
+        return () => { cancelled = true; };
     }, [id]);
 
     if (loaded && !data) {

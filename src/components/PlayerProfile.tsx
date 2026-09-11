@@ -28,6 +28,9 @@ const PlayerProfile: React.FC = () => {
     // media:// allowlist, so mediaUrl() would 403 on it.
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
     const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    // Guards against out-of-order responses when navigating quickly between
+    // two profiles — the slower stale fetch must not win.
+    const loadTokenRef = useRef(0);
 
     useEffect(() => () => {
         if (previewUrl) URL.revokeObjectURL(previewUrl);
@@ -36,9 +39,11 @@ const PlayerProfile: React.FC = () => {
 
     const load = async () => {
         if (!id) return;
+        const token = ++loadTokenRef.current;
         setLoadFailed(false);
         try {
             const d = await window.api.getPlayerProfile(Number(id));
+            if (token !== loadTokenRef.current) return;
             setData(d);
             if (d) {
                 setName(d.player.name || '');
@@ -49,11 +54,12 @@ const PlayerProfile: React.FC = () => {
                 setPreviewUrl(null);
             }
         } catch (e) {
+            if (token !== loadTokenRef.current) return;
             console.error('Failed to load player profile', e);
             setData(null);
             setLoadFailed(true);
         } finally {
-            setLoaded(true);
+            if (token === loadTokenRef.current) setLoaded(true);
         }
     };
 
@@ -81,6 +87,10 @@ const PlayerProfile: React.FC = () => {
         } catch (err) {
             console.error('Failed to save player', err);
             setSaveError(true);
+            // Keep the user's edits: reloading now would silently replace the
+            // form with DB values (and discard everything typed) on top of a
+            // transient error chip.
+            return;
         }
         await load();
     };

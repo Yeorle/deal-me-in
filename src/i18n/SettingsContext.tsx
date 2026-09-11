@@ -91,12 +91,18 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             const next = parseSettings(raw);
             setSettings(next);
             applyAccent(next.accentColor);
+            document.documentElement.lang = next.language;
+        }).catch(e => {
+            // Stay on defaults rather than leaving an unhandled rejection (the
+            // accent would never be applied either).
+            console.error('Failed to load settings', e);
         });
 
         const unsub = window.api.onSettingsUpdate(raw => {
             const next = parseSettings(raw);
             setSettings(next);
             applyAccent(next.accentColor);
+            document.documentElement.lang = next.language;
         });
 
         return () => {

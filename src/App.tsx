@@ -10,6 +10,7 @@ import TournamentResultsView from './components/TournamentResultsView';
 import ProjectorView from './components/ProjectorView';
 import ProjectorDesigner from './components/ProjectorDesigner';
 import Settings from './components/Settings';
+import SeatMovePopup from './components/SeatMovePopup';
 import SoundCuePlayer from './utils/SoundCuePlayer';
 import { SettingsProvider } from './i18n/SettingsContext';
 import { useSettings } from './i18n/useSettings';
@@ -76,6 +77,12 @@ const AppContent: React.FC = () => {
                     <Route path="/settings" element={<Settings />} />
                     <Route path="/projector-designer" element={<ProjectorDesigner />} />
                 </Routes>
+
+                {/* Mounted on every main-window route (the operator may be on
+                    /players or /history when a merge/balance fires), but never
+                    on the projector or structure-editor windows — those don't
+                    need seat-move interruptions. */}
+                {!isStructureEditor && !isProjector && <SeatMovePopup />}
             </main>
         </div>
     );

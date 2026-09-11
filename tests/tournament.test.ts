@@ -20,7 +20,7 @@ vi.mock('../electron/db', () => ({
 }));
 
 import { TournamentManager, shuffle, Player, Prize } from '../electron/tournament';
-import { archiveTournament, saveTournamentResults, updateTournamentState } from '../electron/db';
+import { archiveTournament, saveTournamentResults, updateTournamentState, getTournamentById, getRunningTournament } from '../electron/db';
 
 function fakeWindow(): BrowserWindow {
     return {
@@ -437,5 +437,98 @@ describe('reloadFromDb (backup import)', () => {
         expect(state.isActive).toBe(false);
         expect(state.tables).toHaveLength(0);
         expect(state.bustedPlayers).toHaveLength(0);
+    });
+});
+
+describe('state hydration hardening', () => {
+    it('clamps a non-positive playersPerTable so seating cannot loop forever', () => {
+        const manager = new TournamentManager();
+        manager.initialize(
+            fakeWindow(),
+            [{ smallBlind: 100, bigBlind: 200, duration: 900 }],
+            makePlayers(10),
+            0, // invalid — would make Math.ceil(n/0) = Infinity loop forever
+            'Test Tournament',
+            true, true, false,
+            10000,
+            [],
+            { entryFee: 50, currency: 'EUR', structureId: 1, structureName: 'Turbo' },
+        );
+        manager.randomizeSeating();
+        const state = manager.getState();
+        expect(state.tables).toHaveLength(2);
+        expect(seatedCount(manager)).toBe(10);
+        for (const table of state.tables) {
+            expect(table.seats).toHaveLength(9);
+        }
+    });
+
+    it('applies sane defaults to a snapshot missing core fields', () => {
+        // A legacy/hand-edited row without currentLevelIndex/timeLeft/etc.
+        // must not hydrate into undefined/NaN fields.
+        vi.mocked(getRunningTournament).mockImplementationOnce(() => ({
+            id: 7,
+            name: 'Legacy',
+            state: JSON.stringify({ levels: [{ smallBlind: 100, bigBlind: 200, duration: 900 }] }),
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any));
+        const manager = new TournamentManager();
+        manager.load();
+        const state = manager.getState();
+        expect(state.isActive).toBe(true);
+        expect(state.currentLevelIndex).toBe(0);
+        expect(state.timeLeftInLevel).toBe(900);
+        expect(state.totalEntries).toBe(0);
+        expect(state.playersRemaining).toBe(0);
+    });
+});
+
+describe('updatePlayerInfo (roster edit while running)', () => {
+    it('refreshes name/photo across seats, unassigned and busted lists', () => {
+        const manager = setup({ players: 5, playersPerTable: 9, autoMerge: false, autoBalance: false });
+        manager.bustPlayer(2);
+        manager.bustPlayer(3);
+        manager.unbustPlayer(3); // player 3 is now unassigned
+
+        manager.updatePlayerInfo(1, { name: 'Renamed', photo_path: '/new/path.png' });
+        const state = manager.getState();
+        const seated1 = state.tables.flatMap(t => t.seats).find(s => s.player?.id === 1)?.player;
+        expect(seated1?.name).toBe('Renamed');
+        expect(seated1?.photo_path).toBe('/new/path.png');
+
+        manager.updatePlayerInfo(2, { name: 'Busted Renamed' });
+        expect(manager.getState().bustedPlayers.find(p => p.id === 2)?.name).toBe('Busted Renamed');
+
+        // Untouched players keep their values.
+        expect(state.unassignedPlayers.find(p => p.id === 3)?.name).toBe('Player 3');
+    });
+});
+
+describe('state persistence round-trip', () => {
+    it('preserves bustElapsed (playtime) across save → restore so a late finalize is correct', () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+        try {
+            vi.setSystemTime(0);
+            const manager = setup({ players: 5, playersPerTable: 9, autoMerge: false, autoBalance: false });
+            manager.startTimer();
+            vi.advanceTimersByTime(30_000);
+            manager.pauseTimer();
+            manager.bustPlayer(2); // player 2's playtime = 30s, recorded in bustElapsed
+
+            // Rehydrate the persisted snapshot like a restart/switch would.
+            const savedState = vi.mocked(updateTournamentState).mock.calls.at(-1)![1];
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const row = { id: 1, name: 'Test Tournament', status: 'running', state: JSON.stringify(savedState) } as any;
+            vi.mocked(getTournamentById).mockReturnValueOnce(row);
+
+            manager.switchTournament(1);
+            expect(manager.getState().playersRemaining).toBe(4);
+
+            manager.finalize(manager.getStandings().filter(r => r.isSurvivor).map(r => r.playerId));
+            const [, rows] = vi.mocked(saveTournamentResults).mock.calls.at(-1)!;
+            expect(rows.find(r => r.player_id === 2)!.playtime_sec).toBe(30);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });

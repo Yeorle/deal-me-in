@@ -120,6 +120,7 @@ const PlayerManagement: React.FC = () => {
                             accept="image/*"
                             onChange={(e) => {
                                 const file = e.target.files?.[0];
+                                e.target.value = '';
                                 if (file) {
                                     setPhotoPath(window.api.getPathForFile(file));
                                 }

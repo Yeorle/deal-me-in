@@ -264,14 +264,20 @@ export function updatePlayer(player: { id: number; name: string; nickname?: stri
 // The photo file and all tournament state snapshots are scrubbed as well.
 export function deletePlayer(id: number) {
   const row = getDB().prepare('SELECT photo_path FROM Players WHERE id = ?').get(id) as { photo_path: string | null } | undefined;
-  const stmt = getDB().prepare(`
-    UPDATE Players
-    SET is_deleted = 1, name = '', nickname = NULL, email = NULL, photo_path = NULL
-    WHERE id = ?
-  `);
-  const result = stmt.run(id);
+  // The soft-delete and the PII scrub of every tournament snapshot must land
+  // together: a crash in between would leave the row invisible with no retry
+  // path, permanently stranding the player's PII inside the state JSONs.
+  const result = getDB().transaction(() => {
+    const res = getDB().prepare(`
+      UPDATE Players
+      SET is_deleted = 1, name = '', nickname = NULL, email = NULL, photo_path = NULL
+      WHERE id = ?
+    `).run(id);
+    scrubPlayerFromTournamentStates(id);
+    return res;
+  })();
+  // File deletion is best-effort and outside the DB transaction.
   if (row?.photo_path) tryUnlink(row.photo_path);
-  scrubPlayerFromTournamentStates(id);
   return result;
 }
 

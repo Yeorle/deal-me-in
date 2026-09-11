@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react';
 import { Level, Player, Prize, Table, TournamentState } from '../types';
 import TournamentCreator from './TournamentCreator';
 import ManagePlayersPanel from './ManagePlayersPanel';
-import SeatMovePopup from './SeatMovePopup';
 import FinalizeStandingsModal from './FinalizeStandingsModal';
 import { formatEuropeanDateTime, formatDuration, formatClock } from '../utils/format';
 import { placeLabel } from '../utils/place';
@@ -361,7 +360,6 @@ const ControlPanel: React.FC = () => {
                     loadRunningTournaments();
                 }}
             />
-            <SeatMovePopup />
         </div>
     );
 };

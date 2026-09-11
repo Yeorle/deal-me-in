@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useSettings } from '../i18n/useSettings';
 import { ProjectorTheme } from '../types';
 import { mediaUrl } from '../utils/media';
@@ -27,6 +27,7 @@ const Toggle: React.FC<{ on: boolean; onChange: (value: boolean) => void }> = ({
 
 const ProjectorDesigner: React.FC = () => {
     const { t, projector, setProjectorTheme } = useSettings();
+    const [importError, setImportError] = useState<string | null>(null);
 
     const update = (patch: Partial<ProjectorTheme>) => {
         setProjectorTheme({ ...projector, ...patch });
@@ -40,11 +41,18 @@ const ProjectorDesigner: React.FC = () => {
         if (!file) return;
         const sourcePath = window.api.getPathForFile(file);
         if (!sourcePath) return;
-        const importedPath = await window.api.importProjectorImage(sourcePath);
-        if (kind === 'background') {
-            update({ backgroundImage: importedPath, backgroundType: 'image' });
-        } else {
-            update({ logoPath: importedPath });
+        try {
+            const importedPath = await window.api.importProjectorImage(sourcePath);
+            if (kind === 'background') {
+                update({ backgroundImage: importedPath, backgroundType: 'image' });
+            } else {
+                update({ logoPath: importedPath });
+            }
+            setImportError(null);
+        } catch (err) {
+            // An unreadable source or IPC failure must not be a silent no-op.
+            console.error('Failed to import projector image', err);
+            setImportError(t('common.error'));
         }
     };
 
@@ -71,6 +79,7 @@ const ProjectorDesigner: React.FC = () => {
     return (
         <div className="px-10 py-10 w-full max-w-3xl mx-auto">
             <h2 className="text-xl font-semibold tracking-tight mb-8">{t('projectorDesigner.title')}</h2>
+            {importError && <p className="text-sm text-danger -mt-6 mb-6">{importError}</p>}
 
             {/* Background */}
             <section className="bg-surface border border-line rounded p-5 mb-5">

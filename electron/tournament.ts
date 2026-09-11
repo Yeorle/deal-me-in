@@ -148,7 +148,9 @@ export class TournamentManager {
 
         this.levels = levels;
         this.name = name;
-        this.playersPerTable = playersPerTable;
+        // Clamp here too: doSeatPlayers divides by this value, and anything
+        // < 1 makes Math.ceil(n/0) = Infinity loop forever building tables.
+        this.playersPerTable = Number.isInteger(playersPerTable) && playersPerTable > 0 ? playersPerTable : 9;
         this.autoBalance = autoBalance;
         this.autoMerge = autoMerge;
         this.shuffleFinalTable = shuffleFinalTable;
@@ -272,11 +274,13 @@ export class TournamentManager {
             devLog('Restoring tournament state for ID:', this.tournamentId);
             this.name = saved.name;
             this.levels = state.levels || [];
-            this.currentLevelIndex = state.currentLevelIndex;
-            this.timeLeftInLevel = state.timeLeftInLevel;
+            this.currentLevelIndex = state.currentLevelIndex ?? 0;
+            this.timeLeftInLevel = state.timeLeftInLevel ?? this.levels[0]?.duration ?? 0;
             this.isPaused = true; // Always pause on restore/switch
-            this.playersRemaining = state.playersRemaining;
-            this.totalEntries = state.totalEntries;
+            this.totalEntries = state.totalEntries ?? 0;
+            // Fallbacks keep a partial/older snapshot from hydrating into
+            // undefined/NaN fields that would silently corrupt later math.
+            this.playersRemaining = state.playersRemaining ?? this.totalEntries;
             this.tables = state.tables || [];
             this.unassignedPlayers = state.unassignedPlayers || [];
             this.bustedPlayers = state.bustedPlayers || [];
@@ -343,7 +347,14 @@ export class TournamentManager {
         // Run at 250ms for a smoother display; tick() gates broadcasts on a
         // whole-second change so SQLite writes stay at ~1/sec.
         this.timerInterval = setInterval(() => {
-            this.tick();
+            try {
+                this.tick();
+            } catch (e) {
+                // An interval whose callback throws keeps firing every 250ms —
+                // stop the clock instead of spinning on the error.
+                console.error('Timer tick failed — pausing the clock', e);
+                this.pauseTimer();
+            }
         }, 250);
     }
 
@@ -551,6 +562,12 @@ export class TournamentManager {
     }
 
     private doSeatPlayers(players: Player[], playersPerTable: number) {
+        if (!Number.isInteger(playersPerTable) || playersPerTable < 1) {
+            // Degenerate table size (e.g. a corrupt saved playersPerTable):
+            // Math.ceil(n/0) = Infinity would loop forever building tables.
+            console.error('doSeatPlayers: invalid playersPerTable', playersPerTable);
+            return;
+        }
         const shuffledPlayers = shuffle(players);
 
         const numTables = Math.ceil(shuffledPlayers.length / playersPerTable);
@@ -700,6 +717,30 @@ export class TournamentManager {
 
         if (wasSeated) this.checkTableHealth();
         this.broadcastState();
+    }
+
+    // Refresh an in-memory player after a roster edit (name/nickname/photo).
+    // The singleton holds its own copies in seats/unassigned/busted — without
+    // this, broadcasts keep re-saving stale values, and a replaced photo file
+    // (unlinked by updatePlayer) leaves a dangling path behind live references.
+    public updatePlayerInfo(playerId: number, patch: { name?: string; nickname?: string | null; photo_path?: string | null }) {
+        let touched = false;
+        const apply = (p: Player) => {
+            if (p.id !== playerId) return;
+            touched = true;
+            if (patch.name !== undefined) p.name = patch.name;
+            // The DB stores NULL for "none"; the in-memory Player uses undefined.
+            if (patch.nickname !== undefined) p.nickname = patch.nickname ?? undefined;
+            if (patch.photo_path !== undefined) p.photo_path = patch.photo_path ?? undefined;
+        };
+        for (const table of this.tables) {
+            for (const seat of table.seats) {
+                if (seat.player) apply(seat.player);
+            }
+        }
+        for (const p of this.unassignedPlayers) apply(p);
+        for (const p of this.bustedPlayers) apply(p);
+        if (touched) this.broadcastState();
     }
 
 // Add empty tables until every unassigned player has a seat available.
