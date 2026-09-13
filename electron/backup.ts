@@ -21,6 +21,12 @@ import { getAllRowsForExport, replaceAllData, DataDumpRows, PlayerExportRow, Str
 export const BACKUP_FORMAT = 'dealmein-backup';
 export const BACKUP_FORMAT_VERSION = 1;
 
+// Import guards against a zip bomb / pathological archive. Backups hold small
+// JSON plus user photos, so these are far above any legitimate payload while
+// still bounding the synchronous main-process decompression.
+const MAX_ENTRY_UNCOMPRESSED_BYTES = 256 * 1024 * 1024;
+const MAX_TOTAL_UNCOMPRESSED_BYTES = 1024 * 1024 * 1024;
+
 export interface BackupManifest {
   format: string;
   formatVersion: number;
@@ -257,18 +263,37 @@ export function validateDump(json: unknown): DataDumpRows {
     starting_chips: numInt(s.starting_chips, 0),
     data: strOrNull(s.data),
   }));
-  const tournaments = (d.tournaments as Raw[]).map((t): TournamentExportRow => ({
-    id: reqId(t.id, 'tournaments'),
-    name: str(t.name, ''),
-    start_date: strOrNull(t.start_date),
-    end_date: strOrNull(t.end_date),
-    status: str(t.status, 'running'),
-    state: strOrNull(t.state),
-    entry_fee: num(t.entry_fee, 0),
-    currency: str(t.currency, 'EUR'),
-    structure_id: numOrNull(t.structure_id),
-    structure_name: strOrNull(t.structure_name),
-  }));
+  const tournaments = (d.tournaments as Raw[]).map((t): TournamentExportRow => {
+    const id = reqId(t.id, 'tournaments');
+    const status = str(t.status, 'running');
+    const state = strOrNull(t.state);
+    // A running tournament's state drives engine hydration. A null/array/
+    // primitive payload would otherwise be accepted here and only rejected
+    // later by the engine, leaving a "running" row the app can't load.
+    if (status === 'running') {
+      let parsed: unknown;
+      try {
+        parsed = state === null ? null : JSON.parse(state);
+      } catch {
+        throw new Error(`Invalid backup: running tournament ${id} has a corrupt state snapshot.`);
+      }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error(`Invalid backup: running tournament ${id} has an invalid state snapshot.`);
+      }
+    }
+    return {
+      id,
+      name: str(t.name, ''),
+      start_date: strOrNull(t.start_date),
+      end_date: strOrNull(t.end_date),
+      status,
+      state,
+      entry_fee: num(t.entry_fee, 0),
+      currency: str(t.currency, 'EUR'),
+      structure_id: numOrNull(t.structure_id),
+      structure_name: strOrNull(t.structure_name),
+    };
+  });
   const tournamentResults = (d.tournamentResults as Raw[]).map((r): TournamentResultExportRow => ({
     id: reqId(r.id, 'tournamentResults'),
     tournament_id: reqId(r.tournament_id, 'tournamentResults'),
@@ -366,9 +391,14 @@ export function exportAllData(targetFilePath: string, userDataDir?: string): voi
   zip.addFile('manifest.json', Buffer.from(JSON.stringify(manifest, null, 2)));
   zip.addFile('data.json', Buffer.from(JSON.stringify(dump)));
   for (const f of files) {
-    // A dangling media path must not abort the backup — skip missing files.
-    if (fs.existsSync(f.absPath)) {
+    // A dangling/unreadable media path must not abort the backup — skip it.
+    // existsSync only proves the path exists: a directory, a permission error,
+    // or a transient lock still throws from readFileSync and would abort the
+    // whole export (including the automatic pre-import safety backup).
+    try {
       zip.addFile(f.zipPath, fs.readFileSync(f.absPath));
+    } catch {
+      // skip unreadable media
     }
   }
 
@@ -432,6 +462,20 @@ export function importAllData(sourceFilePath: string): { safetyBackupPath: strin
     zip = new AdmZip(sourceFilePath);
   } catch {
     throw new Error('This file could not be read as a backup archive.');
+  }
+  // Reject an archive that would decompress to an unreasonable size BEFORE
+  // reading any entry (AdmZip loads the whole file up front and getData()
+  // inflates synchronously on the main process).
+  let totalUncompressed = 0;
+  for (const entry of zip.getEntries()) {
+    const size = entry.header.size;
+    if (size > MAX_ENTRY_UNCOMPRESSED_BYTES) {
+      throw new Error('Invalid backup: the archive contains an unexpectedly large entry.');
+    }
+    totalUncompressed += size;
+    if (totalUncompressed > MAX_TOTAL_UNCOMPRESSED_BYTES) {
+      throw new Error('Invalid backup: the archive expands to an unreasonable size.');
+    }
   }
   validateManifest(parseJsonEntry(zip, 'manifest.json'));
   const dump = validateDump(parseJsonEntry(zip, 'data.json'));

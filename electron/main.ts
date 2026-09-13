@@ -2,8 +2,8 @@ import { app, BrowserWindow, dialog, ipcMain, protocol, net } from 'electron'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
 import fs from 'node:fs'
-import { initDB, getPlayers, addPlayer, saveStructure, getStructures, updatePlayer, deletePlayer, getStructure, updateStructure, deleteStructure, getArchivedTournaments, deleteTournament, getRunningTournaments, getSettings, setSetting, getTournamentResults, getPlayerProfile } from './db'
-import { tournamentManager, Player } from './tournament'
+import { initDB, closeDB, getPlayers, addPlayer, saveStructure, getStructures, updatePlayer, deletePlayer, getStructure, updateStructure, deleteStructure, getArchivedTournaments, deleteTournament, getRunningTournaments, getSettings, setSetting, getTournamentResults, getPlayerProfile } from './db'
+import { tournamentManager, Player, MAX_PLAYERS_PER_TABLE } from './tournament'
 import { exportAllData, importAllData, MediaExtractionError } from './backup'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -28,6 +28,10 @@ export const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist')
 process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 'public') : RENDERER_DIST
 
 let win: BrowserWindow | null
+// Single-instance refs for the secondary windows. Without these, repeated
+// clicks stack multiple fullscreen projectors (all receiving every broadcast).
+let projectorWin: BrowserWindow | null = null
+let structureEditorWin: BrowserWindow | null = null
 
 // A custom protocol to serve local files (player photos, projector images) to
 // the renderer. Required because in dev the renderer is served over http://, and
@@ -87,28 +91,35 @@ function freezeAndReloadAllWindows() {
 }
 
 function createWindow() {
-  win = new BrowserWindow({
+  const created = new BrowserWindow({
     icon: path.join(process.env.VITE_PUBLIC, 'logo.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
     },
     autoHideMenuBar: true,
   })
-  hardenWindow(win)
+  win = created
+  hardenWindow(created)
+
+  // Track destruction so the macOS `activate` handler knows whether the main
+  // control window still exists when a projector/editor window is open.
+  created.on('closed', () => {
+    if (win === created) win = null
+  })
 
   if (VITE_DEV_SERVER_URL) {
-    win.loadURL(VITE_DEV_SERVER_URL)
+    created.loadURL(VITE_DEV_SERVER_URL)
   } else {
-    win.loadFile(path.join(RENDERER_DIST, 'index.html'))
+    created.loadFile(path.join(RENDERER_DIST, 'index.html'))
   }
 
   // Register the window so it receives `timer-update` / `seat-moves-notification`
   // broadcasts. This must happen for every window we create — including ones
   // re-created via the macOS `activate` event below — or it would render the
   // initial state but never update on subsequent ticks.
-  tournamentManager.addWindow(win)
+  tournamentManager.addWindow(created)
   // The main control window is the one that plays tournament sound cues.
-  tournamentManager.setPrimaryWindow(win)
+  tournamentManager.setPrimaryWindow(created)
 }
 
 // Quit when all windows are closed, except on macOS. There, it's common
@@ -121,11 +132,20 @@ app.on('window-all-closed', () => {
   }
 })
 
+app.on('will-quit', () => {
+  // Checkpoint/truncate the WAL file on a clean exit.
+  closeDB()
+})
+
 app.on('activate', () => {
-  // On OS X it's common to re-create a window in the app when the
-  // dock icon is clicked and there are no other windows open.
-  if (BrowserWindow.getAllWindows().length === 0) {
+  // On macOS re-create the main control window when the dock icon is clicked
+  // and it isn't open — even if a projector/editor window is still around,
+  // otherwise the operator is stranded with no way back to the controls (the
+  // clock would keep running invisibly behind the projector).
+  if (!win || win.isDestroyed()) {
     createWindow()
+  } else {
+    win.focus()
   }
 })
 
@@ -144,8 +164,12 @@ app.whenReady().then(() => {
     let filePath: string
     try {
       filePath = path.resolve(decodeURIComponent(encoded))
+      // Resolve symlinks before the allow-list check: a symlink under an
+      // allowed media dir could otherwise point at any file on disk.
+      filePath = fs.realpathSync(filePath)
     } catch {
-      // Malformed percent-encoding must not throw out of the handler.
+      // Malformed percent-encoding or a missing file must not throw out of the
+      // handler (and a realpath failure means there is nothing to serve).
       return new Response('Forbidden', { status: 403 })
     }
     const permitted = allowedMediaRoots.some(root => filePath.startsWith(root + path.sep))
@@ -287,13 +311,13 @@ app.whenReady().then(() => {
   ipcMain.handle('data:export', async (event) => {
     const senderWin = BrowserWindow.fromWebContents(event.sender)
     if (!senderWin) return { ok: false, error: 'No window' }
-    const date = new Date().toISOString().slice(0, 10)
-    const result = await dialog.showSaveDialog(senderWin, {
-      defaultPath: `deal-me-in-backup-${date}.dmibak`,
-      filters: [{ name: 'Deal Me In backup', extensions: ['dmibak'] }],
-    })
-    if (result.canceled || !result.filePath) return { ok: true, canceled: true }
     try {
+      const date = new Date().toISOString().slice(0, 10)
+      const result = await dialog.showSaveDialog(senderWin, {
+        defaultPath: `deal-me-in-backup-${date}.dmibak`,
+        filters: [{ name: 'Deal Me In backup', extensions: ['dmibak'] }],
+      })
+      if (result.canceled || !result.filePath) return { ok: true, canceled: true }
       // Flush the live tournament (if any) so the archive captures it as of now.
       tournamentManager.persist()
       exportAllData(result.filePath)
@@ -306,13 +330,14 @@ app.whenReady().then(() => {
   ipcMain.handle('data:import', async (event) => {
     const senderWin = BrowserWindow.fromWebContents(event.sender)
     if (!senderWin) return { ok: false, error: 'No window' }
-    const result = await dialog.showOpenDialog(senderWin, {
-      filters: [{ name: 'Deal Me In backup', extensions: ['dmibak', 'zip'] }],
-      properties: ['openFile'],
-    })
-    if (result.canceled || result.filePaths.length === 0) return { ok: true, canceled: true }
-    const wasRunning = !tournamentManager.getState().isPaused
+    let wasRunning = false
     try {
+      const result = await dialog.showOpenDialog(senderWin, {
+        filters: [{ name: 'Deal Me In backup', extensions: ['dmibak', 'zip'] }],
+        properties: ['openFile'],
+      })
+      if (result.canceled || result.filePaths.length === 0) return { ok: true, canceled: true }
+      wasRunning = !tournamentManager.getState().isPaused
       // Stop the live tournament's timer first: a tick between the DB swap and
       // the reload would save() stale state on top of the imported rows.
       tournamentManager.pauseTimer()
@@ -355,7 +380,14 @@ app.whenReady().then(() => {
   })
 
   ipcMain.handle('window:open-projector', () => {
-    const projectorWin = new BrowserWindow({
+    // Reuse an existing projector rather than stacking fullscreen windows that
+    // all receive every broadcast.
+    if (projectorWin && !projectorWin.isDestroyed()) {
+      if (projectorWin.isMinimized()) projectorWin.restore()
+      projectorWin.focus()
+      return
+    }
+    const created = new BrowserWindow({
       width: 800,
       height: 600,
       icon: path.join(process.env.VITE_PUBLIC, 'logo.png'),
@@ -365,17 +397,21 @@ app.whenReady().then(() => {
       fullscreen: true,
       autoHideMenuBar: true,
     })
-    hardenWindow(projectorWin)
+    projectorWin = created
+    created.on('closed', () => {
+      if (projectorWin === created) projectorWin = null
+    })
+    hardenWindow(created)
 
     if (VITE_DEV_SERVER_URL) {
-      projectorWin.loadURL(`${VITE_DEV_SERVER_URL}#/projector`)
+      created.loadURL(`${VITE_DEV_SERVER_URL}#/projector`)
     } else {
       // loadFile handles path→URL conversion (Windows backslashes, drive
       // letters, special characters); hand-built file:// strings do not.
-      projectorWin.loadFile(path.join(RENDERER_DIST, 'index.html'), { hash: '/projector' })
+      created.loadFile(path.join(RENDERER_DIST, 'index.html'), { hash: '/projector' })
     }
 
-    tournamentManager.addWindow(projectorWin)
+    tournamentManager.addWindow(created)
   })
 
   ipcMain.on('start-timer', () => {
@@ -392,8 +428,9 @@ app.whenReady().then(() => {
 
   ipcMain.handle('tournament:create', (_event, { structureId, playerIds, maxPlayersPerTable, name, autoBalance, autoMerge, shuffleFinalTable, prizes, entryFee }) => {
     // IPC input is not trusted: a non-positive table size makes the seating
-    // math degenerate (Math.ceil(n/0) = Infinity loops forever in doSeatPlayers).
-    if (!Number.isInteger(maxPlayersPerTable) || maxPlayersPerTable < 1) {
+    // math degenerate (Math.ceil(n/0) = Infinity loops forever in doSeatPlayers),
+    // and an absurdly large one would allocate that many Seat objects.
+    if (!Number.isInteger(maxPlayersPerTable) || maxPlayersPerTable < 1 || maxPlayersPerTable > MAX_PLAYERS_PER_TABLE) {
       throw new Error('Invalid table size');
     }
     const structure = getStructure(structureId) as { name: string; data: string; starting_chips: number } | undefined;
@@ -479,7 +516,27 @@ app.whenReady().then(() => {
   })
 
   ipcMain.handle('window:open-structure-editor', (_event, id?) => {
-    const editorWin = new BrowserWindow({
+    // `window=1` tells the renderer this route lives in its own BrowserWindow, so
+    // its close buttons may call window.close() (vs navigate back when the same
+    // route is rendered inside the main window).
+    const hash = id ? `/structure-editor?id=${id}&window=1` : '/structure-editor?window=1';
+
+    // Reuse the existing editor instead of opening duplicates. If a specific
+    // structure was requested, navigate the open window to it.
+    if (structureEditorWin && !structureEditorWin.isDestroyed()) {
+      if (id) {
+        if (VITE_DEV_SERVER_URL) {
+          structureEditorWin.loadURL(`${VITE_DEV_SERVER_URL}#${hash}`)
+        } else {
+          structureEditorWin.loadFile(path.join(RENDERER_DIST, 'index.html'), { hash })
+        }
+      }
+      if (structureEditorWin.isMinimized()) structureEditorWin.restore()
+      structureEditorWin.focus()
+      return
+    }
+
+    const created = new BrowserWindow({
       width: 900,
       height: 700,
       title: 'Structure Editor',
@@ -489,17 +546,16 @@ app.whenReady().then(() => {
       },
       autoHideMenuBar: true,
     })
-    hardenWindow(editorWin)
-
-    // `window=1` tells the renderer this route lives in its own BrowserWindow, so
-    // its close buttons may call window.close() (vs navigate back when the same
-    // route is rendered inside the main window).
-    const hash = id ? `/structure-editor?id=${id}&window=1` : '/structure-editor?window=1';
+    structureEditorWin = created
+    created.on('closed', () => {
+      if (structureEditorWin === created) structureEditorWin = null
+    })
+    hardenWindow(created)
 
     if (VITE_DEV_SERVER_URL) {
-      editorWin.loadURL(`${VITE_DEV_SERVER_URL}#${hash}`)
+      created.loadURL(`${VITE_DEV_SERVER_URL}#${hash}`)
     } else {
-      editorWin.loadFile(path.join(RENDERER_DIST, 'index.html'), { hash })
+      created.loadFile(path.join(RENDERER_DIST, 'index.html'), { hash })
     }
   })
 

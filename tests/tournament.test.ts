@@ -566,16 +566,23 @@ describe('removePlayerFromTournament (delete while running)', () => {
 
 describe('switchTournament', () => {
     it('aborts without pausing/saving the live clock when the target is not running', () => {
-        const manager = setup({ players: 4 });
-        manager.startTimer();
-        expect(manager.getState().isPaused).toBe(false);
+        // Fake timers so the started interval cannot leak into later tests and
+        // call save() at arbitrary moments.
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+        try {
+            const manager = setup({ players: 4 });
+            manager.startTimer();
+            expect(manager.getState().isPaused).toBe(false);
 
-        vi.mocked(updateTournamentState).mockClear();
-        manager.switchTournament(42); // getTournamentById is mocked → undefined
+            vi.mocked(updateTournamentState).mockClear();
+            manager.switchTournament(42); // getTournamentById is mocked → undefined
 
-        expect(manager.getState().isPaused).toBe(false);
-        // The stale save() must not have been flushed either.
-        expect(updateTournamentState).not.toHaveBeenCalled();
+            expect(manager.getState().isPaused).toBe(false);
+            // The stale save() must not have been flushed either.
+            expect(updateTournamentState).not.toHaveBeenCalled();
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });
 
@@ -657,18 +664,21 @@ describe('state hydration hardening', () => {
             state: JSON.stringify(corrupt),
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any));
-        manager.switchTournament(1);
+        // A FRESH manager so switchTournament actually rehydrates — on the live
+        // manager the matching id short-circuits and applySavedRow never runs.
+        const restored = new TournamentManager();
+        restored.switchTournament(1);
 
         // unbust → ensureSeatCapacity would add 0-seat tables forever without
         // the clamp (the loop never gains empty seats).
-        manager.unbustPlayer(1);
-        const state = manager.getState();
+        restored.unbustPlayer(1);
+        const state = restored.getState();
         expect(state.unassignedPlayers.map(p => p.id)).toEqual([1]);
         for (const table of state.tables) {
             expect(table.seats.length).toBeGreaterThan(0);
         }
-        manager.randomizeSeating();
-        expect(seatedCount(manager)).toBe(10);
+        restored.randomizeSeating();
+        expect(seatedCount(restored)).toBe(10);
     });
 });
 
@@ -710,10 +720,13 @@ describe('state persistence round-trip', () => {
             const row = { id: 1, name: 'Test Tournament', status: 'running', state: JSON.stringify(savedState) } as any;
             vi.mocked(getTournamentById).mockReturnValueOnce(row);
 
-            manager.switchTournament(1);
-            expect(manager.getState().playersRemaining).toBe(4);
+            // A FRESH manager so switchTournament actually rehydrates via
+            // applySavedRow (the live manager's matching id short-circuits).
+            const restored = new TournamentManager();
+            restored.switchTournament(1);
+            expect(restored.getState().playersRemaining).toBe(4);
 
-            manager.finalize(manager.getStandings().filter(r => r.isSurvivor).map(r => r.playerId));
+            restored.finalize(restored.getStandings().filter(r => r.isSurvivor).map(r => r.playerId));
             const [, rows] = vi.mocked(finalizeTournament).mock.calls.at(-1)!;
             expect(rows.find(r => r.player_id === 2)!.playtime_sec).toBe(30);
         } finally {
@@ -852,6 +865,120 @@ describe('level controls', () => {
             expect(state.timeLeftInLevel).toBe(882);
         } finally {
             vi.useRealTimers();
+        }
+    });
+});
+
+describe('round-5 hardening', () => {
+    it('shuffle is a deterministic permutation for a fixed rng', () => {
+        // The biased sort-shuffle the engine used before also passes a bare
+        // "is a permutation" check, so pin the output for a known sequence.
+        const input = [1, 2, 3, 4, 5];
+        const seq = [0.1, 0.9, 0.3, 0.7];
+        let i = 0;
+        const rng = () => seq[i++ % seq.length];
+        const first = shuffle(input, rng);
+        i = 0;
+        const second = shuffle(input, rng);
+        expect(first).toEqual(second);
+        expect(input).toEqual([1, 2, 3, 4, 5]); // not mutated
+        expect([...first].sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5]);
+    });
+
+    it('rejects a null/non-object saved state without half-hydrating the singleton', () => {
+        vi.mocked(getTournamentById).mockImplementationOnce(() => ({
+            id: 99,
+            name: 'Corrupt',
+            status: 'running',
+            state: 'null',
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any));
+        const manager = new TournamentManager();
+        manager.switchTournament(99);
+
+        const state = manager.getState();
+        expect(state.isActive).toBe(false);
+        expect(state.levels).toHaveLength(0);
+        expect(state.tables).toHaveLength(0);
+    });
+
+    it('startTimer is a no-op with an empty level list (no elapsedTime inflation)', () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+        try {
+            vi.setSystemTime(0);
+            vi.mocked(getTournamentById).mockImplementationOnce(() => ({
+                id: 5,
+                name: 'Empty',
+                status: 'running',
+                state: JSON.stringify({ levels: [] }),
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            } as any));
+            const manager = new TournamentManager();
+            manager.switchTournament(5);
+            manager.startTimer();
+            vi.advanceTimersByTime(60_000);
+
+            const state = manager.getState();
+            expect(state.isPaused).toBe(true);
+            expect(state.elapsedTime).toBe(0);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('falls back to the Tournaments row entry_fee when the snapshot predates it', () => {
+        vi.mocked(getTournamentById).mockImplementationOnce(() => ({
+            id: 6,
+            name: 'Legacy',
+            status: 'running',
+            entry_fee: 75,
+            state: JSON.stringify({ levels: [{ smallBlind: 1, bigBlind: 2, duration: 60 }] }),
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any));
+        const manager = new TournamentManager();
+        manager.switchTournament(6);
+        expect(manager.getState().entryFee).toBe(75);
+    });
+
+    it('caps an absurd playersPerTable rather than allocating unbounded seats', () => {
+        const manager = new TournamentManager();
+        manager.initialize(
+            fakeWindow(),
+            [{ smallBlind: 100, bigBlind: 200, duration: 900 }],
+            makePlayers(4),
+            1_000_000,
+            'Test Tournament',
+            false, false, false,
+            10000,
+            [],
+            { entryFee: 0, currency: 'EUR', structureId: 1, structureName: 'S' },
+        );
+        manager.randomizeSeating();
+        const state = manager.getState();
+        expect(state.tables).toHaveLength(1);
+        expect(state.tables[0].seats.length).toBe(9); // clamped to the default
+    });
+
+    it('setTimeLeftInLevel ignores NaN instead of poisoning the clock', () => {
+        const manager = setup({ players: 4 });
+        manager.setTimeLeftInLevel(NaN);
+        expect(manager.getState().timeLeftInLevel).toBe(900);
+    });
+
+    it('sanitizes email out of unassigned and busted lists too', () => {
+        const manager = setup({ players: 5, playersPerTable: 9, autoMerge: false, autoBalance: false });
+        manager.bustPlayer(2);
+        manager.unbustPlayer(3); // player 3 → unassigned
+
+        const state = manager.getState();
+        const everyPlayer: Player[] = [
+            ...state.tables.flatMap(t => t.seats.map(s => s.player)),
+            ...state.unassignedPlayers,
+            ...state.bustedPlayers,
+        ].filter((p): p is Player => p !== null);
+        expect(everyPlayer.length).toBeGreaterThan(0);
+        for (const p of everyPlayer) {
+            expect('email' in p).toBe(false);
         }
     });
 });

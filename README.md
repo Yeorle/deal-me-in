@@ -70,6 +70,8 @@ Everything lives in the OS user-data directory (e.g. `~/Library/Application Supp
 
 - `poker_manager.db` — players, structures, tournaments, per-player **tournament results**, and app settings (SQLite, WAL mode).
 - `photos/` — copies of player photos referenced by absolute path from the database.
+- `projector/` — copies of projector background/logo images.
+- `backups/` — automatic pre-import safety backups written before a backup import.
 
 On first run the database is seeded with a few sample players and two sample structures.
 
@@ -89,7 +91,7 @@ npm run dev        # Vite dev server + Electron with hot-module reload
 ## Quality checks
 
 ```bash
-npm run lint       # ESLint over src/ and electron/ (zero-warning policy)
+npm run lint       # ESLint over the repo (zero-warning policy)
 npx tsc --noEmit   # type-check without emitting
 npm run test       # Vitest unit tests for the tournament engine (tests/)
 ```

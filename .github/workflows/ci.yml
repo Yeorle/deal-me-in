@@ -22,4 +22,8 @@ jobs:
       # The plain `tsc` run ignores project references, so the Vite config
       # files (tsconfig.node.json) need their own typecheck pass.
       - run: npx tsc --noEmit && npx tsc -p tsconfig.node.json --noEmit
+      # Build the renderer + main/preload bundles (not electron-builder — that
+      # needs the Electron binary). Catches build-only breakage the typecheck
+      # and tests cannot see (CSP injection, plugin/assets regressions).
+      - run: npx vite build
       - run: npm run test

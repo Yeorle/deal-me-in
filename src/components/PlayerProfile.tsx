@@ -61,7 +61,12 @@ const PlayerProfile: React.FC = () => {
         // Navigating to a different player: drop the previous profile (and its
         // editable form) immediately, so a Save pressed before the fetch
         // resolves cannot write the previous player's data onto the new id.
-        if (opts?.resetData) setData(null);
+        // Also clear `loaded` so the "not found" branch only renders after the
+        // current fetch resolves, not on the stale previous result.
+        if (opts?.resetData) {
+            setData(null);
+            setLoaded(false);
+        }
         setLoadFailed(false);
         try {
             const d = await window.api.getPlayerProfile(Number(id));
@@ -205,7 +210,17 @@ const PlayerProfile: React.FC = () => {
                                 value={(data.earnings_by_currency ?? []).length > 0
                                     ? data.earnings_by_currency.map(e => formatCurrencyWith(e.total, e.currency, language)).join('  ·  ')
                                     : formatCurrency(0)}
-                                valueClass={stats.total_earnings > 0 ? 'text-accent' : stats.total_earnings < 0 ? 'text-danger' : 'text-ink'}
+                                valueClass={(() => {
+                                    // Derive the sign per currency — summing across
+                                    // currencies (stats.total_earnings) is meaningless
+                                    // and would colour a mixed +100 EUR / -100 USD
+                                    // total as neutral next to the per-currency text.
+                                    const totals = (data.earnings_by_currency ?? []).map(e => e.total);
+                                    if (totals.length === 0) return 'text-ink';
+                                    if (totals.every(v => v > 0)) return 'text-accent';
+                                    if (totals.every(v => v < 0)) return 'text-danger';
+                                    return 'text-ink';
+                                })()}
                             />
                             <Stat label={t('profile.bestFinish')} value={stats.best_place ? placeLabel(stats.best_place, t) : '-'} />
                             <Stat label={t('profile.wins')} value={String(stats.wins ?? 0)} />

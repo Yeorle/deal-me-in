@@ -28,9 +28,15 @@ const Toggle: React.FC<{ on: boolean; onChange: (value: boolean) => void }> = ({
 const ProjectorDesigner: React.FC = () => {
     const { t, projector, setProjectorTheme } = useSettings();
     const [importError, setImportError] = useState<string | null>(null);
+    const [saveError, setSaveError] = useState<string | null>(null);
 
     const update = (patch: Partial<ProjectorTheme>) => {
-        setProjectorTheme({ ...projector, ...patch });
+        setSaveError(null);
+        // A failed save must not be a silent no-op (or an unhandled rejection).
+        void setProjectorTheme({ ...projector, ...patch }).catch(err => {
+            console.error('Failed to save projector theme', err);
+            setSaveError(t('common.error'));
+        });
     };
 
     const handleImagePick = async (
@@ -82,6 +88,7 @@ const ProjectorDesigner: React.FC = () => {
         <div className="px-10 py-10 w-full max-w-3xl mx-auto">
             <h2 className="text-xl font-semibold tracking-tight mb-8">{t('projectorDesigner.title')}</h2>
             {importError && <p className="text-sm text-danger -mt-6 mb-6">{importError}</p>}
+            {saveError && <p className="text-sm text-danger -mt-6 mb-6">{saveError}</p>}
 
             {/* Background */}
             <section className="bg-surface border border-line rounded p-5 mb-5">

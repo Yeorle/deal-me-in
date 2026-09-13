@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useId, useRef } from 'react';
 import { useSettings } from '../i18n/useSettings';
 
 interface ConfirmationModalProps {
@@ -24,12 +24,26 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
 }) => {
     const { t } = useSettings();
     const [hasConfirmed, setHasConfirmed] = useState(false);
+    const titleId = useId();
+    const checkboxId = useId();
+    const panelRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
         if (isOpen) {
             setHasConfirmed(false);
+            panelRef.current?.focus();
         }
     }, [isOpen]);
+
+    // Escape closes the dialog for keyboard users.
+    useEffect(() => {
+        if (!isOpen) return;
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') onClose();
+        };
+        window.addEventListener('keydown', onKeyDown);
+        return () => window.removeEventListener('keydown', onKeyDown);
+    }, [isOpen, onClose]);
 
     if (!isOpen) return null;
 
@@ -37,17 +51,24 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
 
     return (
         <div className="fixed inset-0 bg-ink/30 flex items-center justify-center p-4 z-50">
-            <div className="bg-surface rounded p-6 max-w-sm w-full border border-line text-left">
-                <h3 className="text-base font-semibold mb-3 text-ink">{title}</h3>
+            <div
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby={titleId}
+                ref={panelRef}
+                tabIndex={-1}
+                className="bg-surface rounded p-6 max-w-sm w-full border border-line text-left outline-none"
+            >
+                <h3 id={titleId} className="text-base font-semibold mb-3 text-ink">{title}</h3>
                 <p className="text-sm text-ink-soft mb-5">
                     {message}
                 </p>
 
                 {checkboxLabel && (
-                    <label htmlFor="confirmationCheckbox" className="flex items-center gap-2 mb-5 text-sm text-ink-soft select-none cursor-pointer">
+                    <label htmlFor={checkboxId} className="flex items-center gap-2 mb-5 text-sm text-ink-soft select-none cursor-pointer">
                         <input
                             type="checkbox"
-                            id="confirmationCheckbox"
+                            id={checkboxId}
                             checked={hasConfirmed}
                             onChange={(e) => setHasConfirmed(e.target.checked)}
                             className="w-4 h-4 accent-accent"

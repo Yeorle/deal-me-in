@@ -29,11 +29,11 @@ const StructureList: React.FC = () => {
     }, []);
 
     const handleCreateNew = () => {
-        window.api.openStructureEditor();
+        window.api.openStructureEditor().catch(e => console.error('Failed to open structure editor', e));
     };
 
     const handleEdit = (id: number) => {
-        window.api.openStructureEditor(id);
+        window.api.openStructureEditor(id).catch(e => console.error('Failed to open structure editor', e));
     };
 
     const confirmDelete = (id: number) => {

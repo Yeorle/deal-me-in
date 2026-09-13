@@ -14,6 +14,8 @@ const PlayerManagement: React.FC = () => {
     const [nickname, setNickname] = useState('');
     const [email, setEmail] = useState('');
     const [photoPath, setPhotoPath] = useState('');
+    const [isSaving, setIsSaving] = useState(false);
+    const [saveError, setSaveError] = useState(false);
 
     const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
     const [playerToDelete, setPlayerToDelete] = useState<number | null>(null);
@@ -42,13 +44,18 @@ const PlayerManagement: React.FC = () => {
 
     const handleAddPlayer = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!name.trim()) return;
+        if (!name.trim() || isSaving) return;
+        setIsSaving(true);
+        setSaveError(false);
         try {
             await window.api.addPlayer({ name, nickname, email, photoPath });
             resetForm();
             fetchPlayers();
         } catch (error) {
             console.error('Failed to save player:', error);
+            setSaveError(true);
+        } finally {
+            setIsSaving(false);
         }
     };
 
@@ -129,8 +136,17 @@ const PlayerManagement: React.FC = () => {
                         />
                     </div>
                 </div>
-                <div className="mt-5 flex justify-end">
-                    <button type="submit" className="bg-accent text-white px-4 py-2 rounded text-sm font-medium hover:bg-accent-600 transition-colors">
+                <div className="mt-5 flex justify-end items-center gap-3">
+                    {saveError && <span className="text-xs text-danger">{t('common.error')}</span>}
+                    <button
+                        type="submit"
+                        disabled={isSaving}
+                        className={`px-4 py-2 rounded text-sm font-medium transition-colors ${
+                            isSaving
+                                ? 'bg-line text-ink-faint cursor-not-allowed'
+                                : 'bg-accent text-white hover:bg-accent-600'
+                        }`}
+                    >
                         {t('players.addPlayer')}
                     </button>
                 </div>
