@@ -159,6 +159,15 @@ export function getDB() {
   return db;
 }
 
+// Close the connection on quit so WAL is checkpointed/truncated instead of
+// growing across force-kills. Safe to call more than once.
+export function closeDB() {
+  if (db) {
+    db.close();
+    db = undefined;
+  }
+}
+
 export function getPlayers() {
   const stmt = getDB().prepare('SELECT * FROM Players WHERE is_deleted = 0 ORDER BY id');
   return stmt.all();
@@ -297,8 +306,19 @@ export function updateStructure(structure: { id: number; name: string; starting_
 }
 
 export function deleteStructure(id: number) {
-  const stmt = getDB().prepare('DELETE FROM Structures WHERE id = ?');
-  return stmt.run(id);
+  // Tournaments.structure_id has no FK, so deleting a structure the operator
+  // ever used would leave a dangling reference. Backup import validation
+  // rejects dangling structure ids, which would make every future .dmibak —
+  // including the automatic pre-import safety backup — un-importable. Null the
+  // references in the same transaction as the delete. Historical tournaments
+  // keep their snapshot structure_name, and resuming uses the levels embedded
+  // in their state, so nothing is lost.
+  const database = getDB();
+  const run = database.transaction((structureId: number) => {
+    database.prepare('UPDATE Tournaments SET structure_id = NULL WHERE structure_id = ?').run(structureId);
+    return database.prepare('DELETE FROM Structures WHERE id = ?').run(structureId);
+  });
+  return run(id);
 }
 
 export interface TournamentMeta {

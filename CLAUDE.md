@@ -101,7 +101,8 @@ Domain methods (use `window.api.*`, defined in `electron/preload.ts`):
 | `randomizeSeating`                          | `tournament:randomize-seating`       |                      |
 | `bustPlayer / unbustPlayer`                 | `tournament:bust-player` / `unbust-player` | triggers `checkTableHealth`; records/clears `bustElapsed`; both handle unassigned players |
 | `stopTournament`                            | `tournament:stop`                    | archives + resets (no results); invoke so the renderer can await the archive |
-| `openProjector / openStructureEditor`       | `window:open-projector` / `open-structure-editor` | creates a new `BrowserWindow` |
+| `setTimeLeft / nextLevel / previousLevel`   | `tournament:set-time-left` / `next-level` / `previous-level` | fire-and-forget `send`-backed controls |
+| `openProjector / openStructureEditor`       | `window:open-projector` / `open-structure-editor` | creates a `BrowserWindow`; reuses/focuses the existing one instead of duplicating |
 | `exportData / importData`                   | `data:export` / `data:import`        | full-data backup (see "Backup export/import" below); returns structured `{ ok, error }`, never throws across IPC |
 | `onSeatMoves(callback)`                     | listens on `seat-moves-notification` |                      |
 

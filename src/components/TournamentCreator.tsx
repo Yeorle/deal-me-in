@@ -171,12 +171,12 @@ const TournamentCreator: React.FC<TournamentCreatorProps> = ({ onClose, onSave }
                     <div className="bg-surface-raised border border-line rounded p-4 text-sm">
                         <div className="flex justify-between mb-1">
                             <span className="text-ink-muted">{t('creator.totalCapacity')}</span>
-                            <span className="text-ink font-medium tabular">{t('creator.seats', { n: totalSeats })}</span>
+                            <span className="text-ink font-medium tabular">{t(totalSeats === 1 ? 'creator.seat' : 'creator.seats', { n: totalSeats })}</span>
                         </div>
                         <div className="flex justify-between">
                             <span className="text-ink-muted">{t('creator.selectedPlayers')}</span>
                             <span className={`font-medium tabular ${isCapacityError ? 'text-danger' : 'text-ink'}`}>
-                                {t('creator.players', { n: selectedPlayerIds.length })}
+                                {t(selectedPlayerIds.length === 1 ? 'creator.player' : 'creator.players', { n: selectedPlayerIds.length })}
                             </span>
                         </div>
                         {isCapacityError && (

@@ -220,6 +220,129 @@ paths; backup dot-segment rejection, INTEGER-column fraction coercion, dangling
 
 ---
 
+## Round 5 review (2026-09-13)
+
+A fifth full pass, run as four parallel deep-dives (tournament engine; db/backup/
+main/preload + Vite config; renderer; tests/i18n/build/type/IPC parity) over the
+post-round-4 code. Baseline was green (`tsc`, lint, 66 tests). Every engine fix
+has a regression test; the suite grew 66 → 75.
+
+### Data integrity / backup
+
+- **Deleting a structure broke every future backup** — `deleteStructure()` was a
+  bare `DELETE` while `Tournaments.structure_id` has no FK. Once the operator
+  deleted any structure a tournament had used, the row kept a dangling id, and
+  round 4's `validateReferentialIntegrity` then **rejected** every export that
+  contained it — including the automatic pre-import safety backup, silently
+  breaking disaster recovery. The delete now nulls the referencing rows in the
+  same transaction (historical rows keep their snapshot `structure_name`).
+- **Unreadable media aborted the whole export** — the comment claimed a dangling
+  path was skipped, but `existsSync` is true for a directory/locked/EACCES path;
+  `readFileSync` then threw. The read is now wrapped and skipped.
+- **Zip-bomb guard** — `importAllData` now rejects archives whose declared
+  uncompressed entry/total size is unreasonable before inflating anything.
+- **Running-tournament state is validated at the import boundary** — a `.dmibak`
+  whose running `state` is `null`/array/primitive/non-JSON is rejected instead
+  of being imported into a row the engine can't load.
+
+### Engine (`electron/tournament.ts`)
+
+- **`applySavedRow` half-hydrated on `state = null`** — `JSON.parse('null')`
+  succeeds, so round 1's parse-before-assign guard didn't help; the next field
+  access threw after `tournamentId` was already committed. The parsed value is
+  now shape-checked (non-null object) before any assignment, and
+  `currentLevelIndex` is clamped to the levels array.
+- **`startTimer` ran with an empty/out-of-range level list** — the round-4 guard
+  only covered `levels.length > 0`; otherwise the first tick reconciled wall
+  time into `elapsedTime`, inflating survivors' recorded playtime. `startTimer`
+  is now a no-op unless a valid level exists, and `initialize` always resets
+  `timeLeftInLevel`.
+- **`entryFee` didn't fall back to the `Tournaments` row** (unlike `currency`),
+  so an older snapshot hydrated `0` and finalize wrote `entry_fee: 0` onto every
+  result. Now falls back to `saved.entry_fee`.
+- **`timeLeftInLevel` fallback used level 0's duration** on a later level; now
+  uses the restored index.
+- **Unbounded `playersPerTable`** — a value like `1000000000` from the creator/
+  IPC/import allocated that many `Seat` objects and hung the main process. All
+  entry points now cap at `MAX_PLAYERS_PER_TABLE` (100).
+- **A DB write failure inside the timer tick escaped as an unhandled
+  exception** — `save()` now contains/logs it so a transient SQLite error can't
+  take down the interval/IPC path.
+- **`balanceTables` gave up with the clock paused** on mixed-size tables (the
+  min-count table can be physically full). It now targets the next-smallest
+  table with a free seat.
+- **`bustElapsed` could be stale** after a main-process stall; `bustPlayer` now
+  reconciles the wall clock first.
+
+### Main process / windows
+
+- **macOS `activate` stranded the operator** — with a projector/editor window
+  open, closing the control panel left no way to reopen it (the dock click saw
+  "a window exists"). It now recreates the main window whenever it is gone.
+- **Repeated clicks stacked duplicate windows** — projector/editor windows are
+  now single-instance and focused/reused (a specific structure id navigates the
+  existing editor).
+- **File-dialog failures/rejections escaped the structured `{ ok, error }`
+  contract** — both dialog calls now sit inside the handler `try`.
+- **`media://` followed symlinks** — the path is now `realpathSync`-resolved
+  before the allow-list check.
+- **The SQLite connection is closed on `will-quit`** (checkpoints/truncates WAL).
+
+### Renderer
+
+- **PlayerProfile flashed "Player not found."** on an in-place id change (the
+  round-3 `resetData` path nulled `data` but left `loaded` true).
+- **ControlPanel showed a level number and `0 / 0` blinds during breaks** — it
+  now renders the break label, matching the projector.
+- **ControlPanel queried running tournaments twice on mount** — the redundant
+  call was removed.
+- **PlayerManagement could double-insert a player** on a fast double-click and
+  swallowed failures; it now guards the submit and shows an inline error.
+- **ProjectorDesigner's `setProjectorTheme` rejection was unhandled** and lost
+  the change silently; it now surfaces an inline error. ControlPanel/StructureList
+  fire-and-forget IPC handlers no longer produce unhandled rejections.
+- **`1 players` / `1 seats` grammar** — one/other variants added (en + fr).
+- **`ConfirmationModal` had no dialog semantics** — added `role="dialog"`,
+  `aria-modal`, labelled title, Escape-to-close, focus-on-open, and a unique
+  checkbox id (was a hardcoded global id).
+
+### Tests, CI, docs
+
+- **Two round-4 tests were vacuous** — `switchTournament(1)` on a manager whose
+  `tournamentId` was already `1` short-circuits before `applySavedRow`, so the
+  save→restore round-trip and `playersPerTable`-clamp tests never hydrated.
+  Both now rehydrate into a fresh manager (and the new null-state/entryFee/
+  empty-levels regressions exercise the same path).
+- **A `switchTournament` test leaked a real 250 ms interval** into later tests;
+  it now uses fake timers. Backup temp dirs are cleaned up in `afterEach`.
+- Added regression tests for the round-5 engine fixes; `shuffle` gained an
+  injectable RNG so its test can't be satisfied by the old biased sort-shuffle.
+- **CI now runs `vite build`** (build-only breakage was invisible before) and
+  ESLint ignores `dist-electron`/`release`.
+- Doc drift fixed: ARCHITECTURE test inventory, README lint scope + data dirs
+  (`projector/`, `backups/`), USER_GUIDE export button label, CLAUDE.md IPC
+  table (added the `send`-backed level controls; windows are reused).
+
+### Known-accepted / remaining gaps (not fixed)
+
+- **Vite 5 / Vitest 4 toolchain mismatch** — Vitest 4's peer is Vite 6/7/8, so
+  npm installs a second Vite (8.x) under `node_modules/vitest`. Tests pass, but
+  they run on a different bundler than the app. Aligning majors needs a
+  `vite-plugin-electron` compatibility check; left for a dedicated dependency
+  bump.
+- **`db.ts` remains untestable under Vitest** (native ABI) — the new
+  `deleteStructure` behavior is therefore not unit-covered.
+- **`PersistedTournamentState` is still untyped** (round-4 gap).
+- **Wall-clock reconciliation is non-monotonic and `pauseTimer` doesn't roll
+  over** crossed levels (round-4 accepted; needs a `performance.now()` policy
+  decision).
+- **`MediaExtractionError`'s message is discarded by the forced reload** — the
+  DB is imported but the "where is my safety backup" text is only shown briefly.
+- **Remaining modals** (finalize, seat-move, creator, inline delete) still lack
+  the dialog semantics added to `ConfirmationModal`.
+
+---
+
 ## 🔴 Critical
 
 ### C1. Un-busting after an auto-merge can deadlock the tournament

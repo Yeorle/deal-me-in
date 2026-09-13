@@ -93,14 +93,28 @@ export interface TournamentState {
 import { getRunningTournament, getTournamentById, createTournament, updateTournamentState, archiveTournament, finalizeTournament, TournamentMeta } from './db';
 
 // Unbiased Fisher–Yates shuffle (returns a new array). Used for every seat
-// draw — `sort(() => Math.random() - 0.5)` is measurably non-uniform.
-export function shuffle<T>(items: T[]): T[] {
+// draw — `sort(() => Math.random() - 0.5)` is measurably non-uniform. `rng` is
+// injectable so a test can assert a deterministic permutation (a bias-free
+// property the old implementation also satisfied by luck).
+export function shuffle<T>(items: T[], rng: () => number = Math.random): T[] {
     const result = [...items];
     for (let i = result.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
+        const j = Math.floor(rng() * (i + 1));
         [result[i], result[j]] = [result[j], result[i]];
     }
     return result;
+}
+
+const DEFAULT_PLAYERS_PER_TABLE = 9;
+// Seat count comes from the renderer/IPC and from imported snapshots. Cap it
+// so a typo (1000000000) can't allocate that many Seat objects and hang the
+// main process mid-event.
+export const MAX_PLAYERS_PER_TABLE = 100;
+
+function normalizePlayersPerTable(value: unknown): number {
+    return Number.isInteger(value) && (value as number) > 0 && (value as number) <= MAX_PLAYERS_PER_TABLE
+        ? (value as number)
+        : DEFAULT_PLAYERS_PER_TABLE;
 }
 
 export class TournamentManager {
@@ -157,7 +171,7 @@ export class TournamentManager {
         this.name = name;
         // Clamp here too: doSeatPlayers divides by this value, and anything
         // < 1 makes Math.ceil(n/0) = Infinity loop forever building tables.
-        this.playersPerTable = Number.isInteger(playersPerTable) && playersPerTable > 0 ? playersPerTable : 9;
+        this.playersPerTable = normalizePlayersPerTable(playersPerTable);
         this.autoBalance = autoBalance;
         this.autoMerge = autoMerge;
         this.shuffleFinalTable = shuffleFinalTable;
@@ -174,9 +188,9 @@ export class TournamentManager {
         this.tables = [];
         this.elapsedTime = 0;
 
-        if (this.levels.length > 0) {
-            this.timeLeftInLevel = this.levels[0].duration;
-        }
+        // Always reset the clock, even for an empty level list, so a previous
+        // tournament's leftover timeLeftInLevel can't leak into this one.
+        this.timeLeftInLevel = this.levels.length > 0 ? this.levels[0].duration : 0;
 
         this.isPaused = true;
 
@@ -279,12 +293,27 @@ export class TournamentManager {
             // Parse before assigning anything so a corrupt state column can't
             // leave the singleton half-hydrated.
             const state = JSON.parse(saved.state as string);
+            // JSON.parse('null') succeeds and returns null, and arrays/numbers
+            // parse too — so the parse alone doesn't prove the payload is
+            // usable. Everything below reads fields off it; reject a non-object
+            // before committing any in-memory field.
+            if (!state || typeof state !== 'object' || Array.isArray(state)) {
+                throw new Error('saved tournament state is not an object');
+            }
+            const levels: Level[] = Array.isArray(state.levels) ? state.levels : [];
+            // A stale/corrupt index must not point past the levels array.
+            const maxIndex = Math.max(0, levels.length - 1);
+            const currentLevelIndex = Number.isInteger(state.currentLevelIndex)
+                ? Math.min(Math.max(state.currentLevelIndex, 0), maxIndex)
+                : 0;
+
             this.tournamentId = saved.id;
             devLog('Restoring tournament state for ID:', this.tournamentId);
             this.name = saved.name;
-            this.levels = state.levels || [];
-            this.currentLevelIndex = state.currentLevelIndex ?? 0;
-            this.timeLeftInLevel = state.timeLeftInLevel ?? this.levels[0]?.duration ?? 0;
+            this.levels = levels;
+            this.currentLevelIndex = currentLevelIndex;
+            // Fall back to the level actually being restored, not level 0.
+            this.timeLeftInLevel = state.timeLeftInLevel ?? levels[currentLevelIndex]?.duration ?? 0;
             this.isPaused = true; // Always pause on restore/switch
             this.totalEntries = state.totalEntries ?? 0;
             // Fallbacks keep a partial/older snapshot from hydrating into
@@ -297,15 +326,17 @@ export class TournamentManager {
             this.autoMerge = state.autoMerge ?? true;
             this.shuffleFinalTable = state.shuffleFinalTable ?? false;
             // `??` only catches null/undefined — a corrupt 0 or negative value
-            // would make ensureSeatCapacity add 0-seat tables forever, so
-            // validate like initialize() does.
-            this.playersPerTable = Number.isInteger(state.playersPerTable) && state.playersPerTable > 0
-                ? state.playersPerTable
-                : 9;
+            // would make ensureSeatCapacity add 0-seat tables forever, and a
+            // huge one would hang the process, so validate like initialize().
+            this.playersPerTable = normalizePlayersPerTable(state.playersPerTable);
             this.startingChips = state.startingChips ?? 0;
             this.elapsedTime = state.elapsedTime ?? 0;
             this.prizes = state.prizes ?? [];
-            this.entryFee = state.entryFee ?? 0;
+            // Fall back to the row's snapshot the same way currency does: an
+            // older running snapshot predating entryFee in state would
+            // otherwise hydrate 0 and finalize every result with a wrong
+            // entry_fee even though the Tournaments row itself is correct.
+            this.entryFee = state.entryFee ?? saved.entry_fee ?? 0;
             this.bustElapsed = state.bustElapsed ?? {};
             // Newer snapshots carry the currency; older ones don't, but the
             // Tournaments row has had a currency column since it was introduced.
@@ -347,20 +378,37 @@ export class TournamentManager {
         this.elapsedAtSegmentStart = this.elapsedTime;
     }
 
+    // Reconcile elapsedTime from the running wall clock without touching
+    // timeLeftInLevel (tick() owns level rollover). Used before recording a
+    // bust so a main-process stall (e.g. OS suspend) can't understate the
+    // busted player's playtime relative to the survivors'.
+    private syncElapsed() {
+        if (this.segmentStartMs === null) return;
+        const elapsedSegment = Math.floor((Date.now() - this.segmentStartMs) / 1000);
+        this.elapsedTime = this.elapsedAtSegmentStart + elapsedSegment;
+    }
+
     public startTimer() {
         if (!this.isPaused) return;
         // Starting the clock is meaningless without a live tournament — and
         // the first tick would otherwise immediately hit the final-level
         // branch of tick() and self-pause.
         if (!this.tournamentId) return;
+        // No usable level to run: an empty/corrupt level list (or an
+        // out-of-range playhead) would otherwise anchor the clock and let the
+        // first tick reconcile wall-clock time into elapsedTime, inflating
+        // survivors' recorded playtime while the display looks frozen.
+        if (this.levels.length === 0 ||
+            this.currentLevelIndex < 0 ||
+            this.currentLevelIndex >= this.levels.length) {
+            return;
+        }
         // Same for a finished tournament (final level exhausted): every tick
         // would re-pause but still reconcile wall-clock time into elapsedTime,
         // silently inflating survivors' recorded playtime while the display
         // sits frozen at 0. setTimeLeftInLevel can rewind the playhead, which
         // makes the clock startable again.
-        if (this.levels.length > 0 &&
-            this.currentLevelIndex === this.levels.length - 1 &&
-            this.timeLeftInLevel === 0) {
+        if (this.currentLevelIndex === this.levels.length - 1 && this.timeLeftInLevel === 0) {
             return;
         }
 
@@ -525,7 +573,10 @@ export class TournamentManager {
         // size than the one the math assumes. IPC input is not trusted — a
         // non-integer value would make doSeatPlayers bail after unassigned
         // players were already cleared, stranding them outside every list.
-        if (playersPerTable !== undefined && Number.isInteger(playersPerTable) && playersPerTable > 0) {
+        if (playersPerTable !== undefined &&
+            Number.isInteger(playersPerTable) &&
+            playersPerTable > 0 &&
+            playersPerTable <= MAX_PLAYERS_PER_TABLE) {
             this.playersPerTable = playersPerTable;
         }
         const ppt = this.playersPerTable;
@@ -687,6 +738,7 @@ export class TournamentManager {
         }
 
         if (bustedPlayer) {
+            this.syncElapsed();
             this.playersRemaining--;
             this.bustedPlayers.push(bustedPlayer);
             if (bustedPlayer.id != null) {
@@ -976,17 +1028,26 @@ export class TournamentManager {
 
             if (maxTable.count - minTable.count <= 1) break;
 
-            // Move one player from max to min
+            // Move one player off the fullest table. Prefer the smallest
+            // table, but with mixed table sizes (randomizeSeating can adopt a
+            // new playersPerTable mid-tournament) the min-count table can be
+            // physically full — fall back to the next-smallest table with an
+            // empty seat instead of giving up and leaving the clock paused.
+            const target = tableCounts.find(tc =>
+                tc !== maxTable &&
+                tc.count < maxTable.count &&
+                tc.table.seats.some(s => s.player === null)
+            );
             const playerToMoveSeat = maxTable.table.seats.find(s => s.player);
-            const targetSeat = minTable.table.seats.find(s => s.player === null);
+            const targetSeat = target?.table.seats.find(s => s.player === null);
 
-            if (playerToMoveSeat && playerToMoveSeat.player && targetSeat) {
-                devLog(`Moving ${playerToMoveSeat.player.name} from Table ${maxTable.id} to Table ${minTable.id}`);
+            if (target && playerToMoveSeat && playerToMoveSeat.player && targetSeat) {
+                devLog(`Moving ${playerToMoveSeat.player.name} from Table ${maxTable.id} to Table ${target.id}`);
 
                 moves.push({
                     playerName: playerToMoveSeat.player.name,
                     from: { kind: 'seat', tableNumber: maxTable.id, seatNumber: playerToMoveSeat.seatNumber },
-                    to: { kind: 'seat', tableNumber: minTable.id, seatNumber: targetSeat.seatNumber },
+                    to: { kind: 'seat', tableNumber: target.id, seatNumber: targetSeat.seatNumber },
                     reason: 'balance'
                 });
 
@@ -1005,7 +1066,15 @@ export class TournamentManager {
 
     private save() {
         if (!this.tournamentId) return;
-        updateTournamentState(this.tournamentId, this.getStateForSave());
+        try {
+            updateTournamentState(this.tournamentId, this.getStateForSave());
+        } catch (e) {
+            // Never let a DB hiccup escape: save() runs inside the timer tick's
+            // catch (which pauses and broadcasts) and inside broadcastState, so
+            // a throw here would turn a transient write failure into an
+            // unhandled exception out of the interval callback.
+            console.error('Failed to persist tournament state', e);
+        }
     }
 
     // Flush the live tournament to its DB row on demand (no-op when idle).

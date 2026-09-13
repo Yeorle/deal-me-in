@@ -40,10 +40,11 @@ gotchas, see [CLAUDE.md](../CLAUDE.md).
 
 Unit tests run with **Vitest** (`npm run test`): `tests/tournament.test.ts` covers the
 tournament engine (seating, bust/unbust, merge/balance/final-table, standings,
-finalize) with `electron` and `electron/db` mocked. `vitest.config.ts` is deliberately
+finalize) with `electron` and `electron/db` mocked, and `tests/backup.test.ts`
+covers the pure backup path/JSON layer. `vitest.config.ts` is deliberately
 standalone so the electron Vite plugins are not loaded during tests. CI (GitHub
-Actions, `.github/workflows/ci.yml`) runs lint, typecheck and the Vitest suite on
-every push.
+Actions, `.github/workflows/ci.yml`) runs lint, typecheck, a Vite build and the
+Vitest suite on every push.
 
 ## Repository layout
 

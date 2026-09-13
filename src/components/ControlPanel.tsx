@@ -15,6 +15,7 @@ interface TimerState {
     smallBlind: number;
     bigBlind: number;
     ante: number;
+    isBreak: boolean;
     isRunning: boolean;
     isActive: boolean;
     name?: string;
@@ -39,6 +40,7 @@ const ControlPanel: React.FC = () => {
         smallBlind: 0,
         bigBlind: 0,
         ante: 0,
+        isBreak: false,
         isRunning: false,
         isActive: false,
         name: '',
@@ -76,6 +78,7 @@ const ControlPanel: React.FC = () => {
                 smallBlind: state.currentLevel?.smallBlind || 0,
                 bigBlind: state.currentLevel?.bigBlind || 0,
                 ante: state.currentLevel?.ante || 0,
+                isBreak: !!state.currentLevel?.isBreak,
                 isRunning: !state.isPaused,
                 isActive: state.isActive,
                 name: state.name,
@@ -97,7 +100,6 @@ const ControlPanel: React.FC = () => {
             // on the "no tournament" default even when one is running.
             console.error('Failed to load tournament state', e);
         });
-        loadRunningTournaments();
 
         const removeListener = window.ipcRenderer.on('timer-update', handleStateUpdate);
 
@@ -119,7 +121,9 @@ const ControlPanel: React.FC = () => {
         else window.ipcRenderer.send('start-timer');
     };
 
-    const handleOpenProjector = () => window.api.openProjector();
+    const handleOpenProjector = () => {
+        window.api.openProjector().catch(e => console.error('Failed to open projector', e));
+    };
 
     const sliderValue = dragTime ?? timerState.remainingTime;
 
@@ -143,8 +147,8 @@ const ControlPanel: React.FC = () => {
         }
     }
 
-    const handleSwitchTournament = async (id: number) => {
-        await window.api.switchTournament(id);
+    const handleSwitchTournament = (id: number) => {
+        window.api.switchTournament(id).catch(e => console.error('Failed to switch tournament', e));
     }
 
     const hasUnassigned = !!timerState.unassignedPlayers && timerState.unassignedPlayers.length > 0;
@@ -185,9 +189,15 @@ const ControlPanel: React.FC = () => {
                                     )}
                                 </div>
                                 <div className="text-sm text-ink-soft tabular mt-1">
-                                    {timerState.smallBlind} <span className="text-ink-faint">/</span> {timerState.bigBlind}
-                                    {timerState.ante > 0 && (
-                                        <span className="text-xs text-ink-muted ml-3">{t('controlPanel.ant')}: {timerState.ante}</span>
+                                    {timerState.isBreak ? (
+                                        <span className="text-xs uppercase tracking-wider">{t('projector.break')}</span>
+                                    ) : (
+                                        <>
+                                            {timerState.smallBlind} <span className="text-ink-faint">/</span> {timerState.bigBlind}
+                                            {timerState.ante > 0 && (
+                                                <span className="text-xs text-ink-muted ml-3">{t('controlPanel.ant')}: {timerState.ante}</span>
+                                            )}
+                                        </>
                                     )}
                                 </div>
                             </div>
@@ -270,7 +280,7 @@ const ControlPanel: React.FC = () => {
 
                                 <div className="flex gap-8 shrink-0">
                                     <Stat label={t('controlPanel.elapsed')} value={formatDuration(timerState.elapsedTime)} widthCh={6} />
-                                    <Stat label={t('controlPanel.level')} value={`#${timerState.level}`} widthCh={3} />
+                                    <Stat label={t('controlPanel.level')} value={timerState.isBreak ? t('projector.break') : `#${timerState.level}`} widthCh={3} />
                                     <Stat
                                         label={t('controlPanel.timeLeft')}
                                         value={`${formatClock(sliderValue)}/${formatClock(timerState.levelDuration)}`}
@@ -281,7 +291,7 @@ const ControlPanel: React.FC = () => {
 
                             {hasUnassigned && (
                                 <div className="text-xs text-danger mt-3">
-                                    {t('controlPanel.unassignedPlayers', { n: timerState.unassignedPlayers!.length })}
+                                    {t(timerState.unassignedPlayers!.length === 1 ? 'controlPanel.unassignedPlayer' : 'controlPanel.unassignedPlayers', { n: timerState.unassignedPlayers!.length })}
                                 </div>
                             )}
                         </section>

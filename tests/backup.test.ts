@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -256,6 +256,21 @@ describe('validateDump', () => {
         expect(dump.tournamentResults[0].place).toBe(0);
         expect(dump.tournamentResults[0].playtime_sec).toBe(0);
     });
+
+    it('rejects a running tournament whose state is not a JSON object', () => {
+        const base = { players: [], structures: [], tournamentResults: [], settings: [] };
+        for (const bad of ['null', '[]', '42', '"x"', 'not json']) {
+            expect(() => validateDump({
+                ...base,
+                tournaments: [{ id: 1, name: 'T', status: 'running', state: bad }],
+            })).toThrow(/running tournament 1/);
+        }
+        // Archived snapshots are opaque — only running ones drive hydration.
+        expect(() => validateDump({
+            ...base,
+            tournaments: [{ id: 1, name: 'T', status: 'archived', state: 'null' }],
+        })).not.toThrow();
+    });
 });
 
 describe('validateReferentialIntegrity', () => {
@@ -361,6 +376,11 @@ describe('exportAllData / importAllData round-trip', () => {
         vi.mocked(app.getPath).mockReturnValue(dstDir);
     });
 
+    afterEach(() => {
+        fs.rmSync(srcDir, { recursive: true, force: true });
+        fs.rmSync(dstDir, { recursive: true, force: true });
+    });
+
     it('writes an archive that imports on a different userData with rewritten paths', () => {
         // Export runs against srcDir's userData (the source of the rows);
         // import targets dstDir — the mocked app.getPath('userData').
@@ -390,6 +410,18 @@ describe('exportAllData / importAllData round-trip', () => {
         expect(() => importAllData(archivePath)).not.toThrow();
         expect(fs.existsSync(path.join(dstDir, 'photos', '111-aaa.jpg'))).toBe(true);
         expect(fs.existsSync(path.join(dstDir, 'photos', '222-bbb.png'))).toBe(false);
+    });
+
+    it('skips media that exists but cannot be read instead of aborting the export', () => {
+        // A directory passes existsSync but throws on readFileSync — the export
+        // must still complete (and still pack the readable files).
+        const photo = path.join(srcDir, 'photos', '111-aaa.jpg');
+        fs.unlinkSync(photo);
+        fs.mkdirSync(photo);
+        expect(() => exportAllData(archivePath, srcDir)).not.toThrow();
+        const zip = new AdmZip(archivePath);
+        expect(zip.getEntry('photos/111-aaa.jpg')).toBeFalsy();
+        expect(zip.getEntry('photos/222-bbb.png')).toBeDefined();
     });
 
     it('rejects a non-backup file without touching the database', () => {
