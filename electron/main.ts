@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, protocol, net } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, net } from 'electron'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
 import fs from 'node:fs'
@@ -43,7 +43,20 @@ protocol.registerSchemesAsPrivileged([
 
 // Copy a user-picked file into a subdirectory of userData with a unique name
 // and return the new absolute path (player photos, projector images).
+// The source path arrives over IPC (normally from a File the user picked, but
+// IPC is untrusted): require a readable regular file within a sane size, so a
+// compromised renderer can't turn this copy into a directory copy or persist
+// an unbounded file under userData.
+const MAX_IMPORT_BYTES = 50 * 1024 * 1024;
 function importFileToUserData(sourcePath: string, subdir: string): string {
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(sourcePath);
+  } catch {
+    throw new Error('The selected file could not be read.');
+  }
+  if (!stat.isFile()) throw new Error('The selected path is not a file.');
+  if (stat.size > MAX_IMPORT_BYTES) throw new Error('The selected file is too large.');
   const dir = path.join(app.getPath('userData'), subdir)
   fs.mkdirSync(dir, { recursive: true })
   const ext = path.extname(sourcePath)
@@ -56,6 +69,41 @@ function importFileToUserData(sourcePath: string, subdir: string): string {
   } while (fs.existsSync(newPath))
   fs.copyFileSync(sourcePath, newPath)
   return newPath
+}
+
+// Best-effort removal of a file one of our media directories owns.
+function tryUnlink(filePath: string) {
+  try {
+    fs.unlinkSync(filePath)
+  } catch {
+    // best-effort
+  }
+}
+
+// The projector background/logo absolute paths referenced by a theme JSON.
+function projectorMediaPaths(raw: string | undefined): Set<string> {
+  const paths = new Set<string>()
+  if (!raw) return paths
+  try {
+    const theme = JSON.parse(raw) as { backgroundImage?: unknown; logoPath?: unknown }
+    for (const value of [theme.backgroundImage, theme.logoPath]) {
+      if (typeof value === 'string' && value) paths.add(value)
+    }
+  } catch {
+    // unparseable theme — nothing to clean
+  }
+  return paths
+}
+
+// Replacing/clearing a projector image leaves the previous copied file behind
+// forever otherwise (importProjectorImage always writes a new unique name).
+function cleanupReplacedProjectorMedia(previousTheme: string | undefined, nextTheme: string) {
+  const root = path.join(app.getPath('userData'), 'projector') + path.sep
+  const stillUsed = projectorMediaPaths(nextTheme)
+  for (const oldPath of projectorMediaPaths(previousTheme)) {
+    if (stillUsed.has(oldPath) || !oldPath.startsWith(root)) continue
+    tryUnlink(oldPath)
+  }
 }
 
 // Renderer hardening: a compromised renderer must not be able to open new
@@ -88,6 +136,42 @@ function freezeAndReloadAllWindows() {
       }
     }
   }, 1500)
+}
+
+// Bring the main control window back to the foreground, recreating it if it
+// was closed. The macOS `activate` event does this on macOS, but there is no
+// equivalent on Windows/Linux — an application menu entry is the only way back
+// if the operator closes the control panel while a projector/editor window is
+// still open (otherwise the app can't be quit and the clock runs invisibly).
+function showControlPanel() {
+  if (!win || win.isDestroyed()) {
+    createWindow()
+    return
+  }
+  if (win.isMinimized()) win.restore()
+  win.show()
+  win.focus()
+}
+
+function installAppMenu() {
+  if (process.platform === 'darwin') return // keep the default macOS menu
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    {
+      label: 'File',
+      submenu: [
+        { label: 'Show Control Panel', accelerator: 'CmdOrCtrl+Shift+M', click: showControlPanel },
+        { type: 'separator' },
+        { role: 'quit' },
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' }, { role: 'redo' }, { type: 'separator' },
+        { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' },
+      ],
+    },
+  ]))
 }
 
 function createWindow() {
@@ -152,6 +236,8 @@ app.on('activate', () => {
 app.whenReady().then(() => {
   initDB()
 
+  installAppMenu()
+
   // Serve local files via `media://local/<encodeURIComponent(absolutePath)>`.
   // Only files inside the app-managed media directories are served — the
   // renderer must not get an arbitrary-file-read primitive.
@@ -160,9 +246,11 @@ app.whenReady().then(() => {
     path.join(app.getPath('userData'), 'projector'),
   ]
   protocol.handle('media', (request) => {
-    const encoded = new URL(request.url).pathname.replace(/^\//, '')
     let filePath: string
     try {
+      // new URL() itself can throw on a malformed request URL, so keep it
+      // inside the guard alongside the decode/realpath below.
+      const encoded = new URL(request.url).pathname.replace(/^\//, '')
       filePath = path.resolve(decodeURIComponent(encoded))
       // Resolve symlinks before the allow-list check: a symlink under an
       // allowed media dir could otherwise point at any file on disk.
@@ -295,7 +383,10 @@ app.whenReady().then(() => {
   })
 
   ipcMain.handle('db:set-setting', (_event, { key, value }: { key: string; value: string }) => {
+    const previousTheme = key === 'projectorTheme' ? getSettings().projectorTheme : undefined
     setSetting(key, value)
+    // Replacing/clearing a projector image must not orphan the old copied file.
+    if (key === 'projectorTheme') cleanupReplacedProjectorMedia(previousTheme, value)
     const updated = getSettings()
     broadcastToAllWindows('settings-update', updated)
     return updated
@@ -342,12 +433,15 @@ app.whenReady().then(() => {
       // the reload would save() stale state on top of the imported rows.
       tournamentManager.pauseTimer()
       const { safetyBackupPath } = importAllData(result.filePaths[0])
-      // No app.relaunch() here: it strands dev against a dead vite server
-      // (vite-plugin-electron exits with the electron process) and is a no-op
-      // from an AppImage's unmounted squashfs. Instead, rehydrate the
-      // singleton from the imported rows right away, then reload every window
-      // after a short delay so the renderer can show its success notice.
-      tournamentManager.reloadFromDb()
+      // Past this point the DB swap has committed. Rehydration is best-effort:
+      // with the engine's snapshot validation it should not throw, but if it
+      // does we must still reload the windows (not resume the stale singleton)
+      // rather than falling into the pre-commit recovery below.
+      try {
+        tournamentManager.reloadFromDb()
+      } catch (e) {
+        console.error('Failed to rehydrate the imported tournament state', e)
+      }
       freezeAndReloadAllWindows()
       return { ok: true, backupPath: safetyBackupPath }
     } catch (e) {
@@ -356,12 +450,17 @@ app.whenReady().then(() => {
         // The in-memory singleton is stale now: resuming it would let the next
         // tick's save() overwrite the freshly imported rows. Rehydrate from the
         // imported DB instead, keep the clock paused, and reload the windows.
-        tournamentManager.reloadFromDb()
+        try {
+          tournamentManager.reloadFromDb()
+        } catch (reloadError) {
+          console.error('Failed to rehydrate after a media-extraction error', reloadError)
+        }
         freezeAndReloadAllWindows()
         return { ok: false, error: e.message }
       }
-      // Nothing was written (validation runs before any DB/media write), so
-      // restoring the clock we paused for the attempt is safe.
+      // Everything thrown before this point (validation, safety-backup write,
+      // or the replaceAllData transaction rolling back) left the DB untouched,
+      // so restoring the clock we paused for the attempt is safe.
       if (wasRunning) tournamentManager.startTimer()
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
     }
@@ -433,6 +532,16 @@ app.whenReady().then(() => {
     if (!Number.isInteger(maxPlayersPerTable) || maxPlayersPerTable < 1 || maxPlayersPerTable > MAX_PLAYERS_PER_TABLE) {
       throw new Error('Invalid table size');
     }
+    if (!Array.isArray(playerIds)) throw new Error('Invalid player list');
+    // Money must never go negative — a negative entry fee or prize would
+    // corrupt every recorded result (earnings are derived as prize - entry_fee).
+    const safeEntryFee = Number.isFinite(entryFee) && entryFee >= 0 ? entryFee : 0;
+    const safePrizes = Array.isArray(prizes)
+      ? prizes
+        .filter((p): p is { place: unknown; amount: unknown } => !!p && typeof p === 'object')
+        .map(p => ({ place: Math.trunc(Number(p.place)), amount: Number(p.amount) }))
+        .filter(p => Number.isInteger(p.place) && p.place > 0 && Number.isFinite(p.amount) && p.amount >= 0)
+      : [];
     const structure = getStructure(structureId) as { name: string; data: string; starting_chips: number } | undefined;
     if (!structure) throw new Error('Structure not found');
 
@@ -464,7 +573,7 @@ app.whenReady().then(() => {
     // name (so history survives structure rename/deletion).
     const settings = getSettings();
     const meta = {
-      entryFee: Number(entryFee) || 0,
+      entryFee: safeEntryFee,
       currency: settings.currency || 'EUR',
       structureId,
       structureName: structure.name,
@@ -472,7 +581,7 @@ app.whenReady().then(() => {
 
     // Initialize tournament (players start as unassigned)
     // We pass maxPlayersPerTable as the preference
-    tournamentManager.initialize(senderWin, parsedData, selectedPlayers, maxPlayersPerTable, name, autoBalance, autoMerge, !!shuffleFinalTable, structure.starting_chips ?? 0, prizes ?? [], meta);
+    tournamentManager.initialize(senderWin, parsedData, selectedPlayers, maxPlayersPerTable, name, autoBalance, autoMerge, !!shuffleFinalTable, structure.starting_chips ?? 0, safePrizes, meta);
 
     return { success: true };
   })

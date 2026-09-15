@@ -10,6 +10,7 @@ const TournamentHistory: React.FC = () => {
     const navigate = useNavigate();
     const [tournaments, setTournaments] = useState<ArchivedTournament[]>([]);
     const [deleteId, setDeleteId] = useState<number | null>(null);
+    const [deleteError, setDeleteError] = useState<string | null>(null);
 
     const load = async () => {
         try {
@@ -29,10 +30,12 @@ const TournamentHistory: React.FC = () => {
             try {
                 await window.api.deleteTournament(deleteId);
                 setDeleteId(null);
+                setDeleteError(null);
                 await load();
             } catch (e) {
                 console.error('Failed to delete tournament', e);
-                setDeleteId(null);
+                // Keep the modal open so the failure is visible and retryable.
+                setDeleteError(t('common.error'));
             }
         }
     };
@@ -72,7 +75,7 @@ const TournamentHistory: React.FC = () => {
                                     <td className="px-5 py-3 text-ink-soft tabular text-right">{formatCurrencyWith(at.prize_pool, at.currency, language)}</td>
                                     <td className="px-5 py-3 text-right">
                                         <button
-                                            onClick={(e) => { e.stopPropagation(); setDeleteId(at.id); }}
+                                            onClick={(e) => { e.stopPropagation(); setDeleteId(at.id); setDeleteError(null); }}
                                             className="text-ink-muted hover:text-danger text-xs font-medium transition-colors"
                                         >
                                             {t('common.delete')}
@@ -87,13 +90,14 @@ const TournamentHistory: React.FC = () => {
 
             <ConfirmationModal
                 isOpen={deleteId !== null}
-                onClose={() => setDeleteId(null)}
+                onClose={() => { setDeleteId(null); setDeleteError(null); }}
                 onConfirm={confirmDelete}
                 title={t('history.deleteArchiveTitle')}
                 message={t('history.deleteArchiveMessage')}
                 checkboxLabel={t('history.deleteArchiveCheckbox')}
                 confirmButtonText={t('history.deleteArchiveConfirm')}
                 isDestructive={true}
+                error={deleteError}
             />
         </div>
     );

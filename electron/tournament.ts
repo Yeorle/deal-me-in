@@ -255,6 +255,10 @@ export class TournamentManager {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const saved = getRunningTournament() as any;
         if (saved) this.applySavedRow(saved);
+        // Broadcast so a window that was registered before the load (startup)
+        // receives the restored state immediately instead of waiting for the
+        // next tick/mutation. reloadFromDb() relies on this too.
+        this.broadcastState();
     }
 
     // Discard the live tournament WITHOUT saving or archiving, then rehydrate
@@ -265,8 +269,7 @@ export class TournamentManager {
         this.tournamentId = null;
         this.pauseTimer();
         this.clearInMemory();
-        this.load();
-        this.broadcastState();
+        this.load(); // broadcasts the rehydrated state
     }
 
     public switchTournament(id: number) {
@@ -289,61 +292,117 @@ export class TournamentManager {
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     private applySavedRow(saved: any) {
+        // Parse first so a corrupt state column can't leave the singleton
+        // half-hydrated. Everything is then validated/coerced into locals
+        // BEFORE any in-memory field is committed — a wrong-typed container
+        // (e.g. `tables: {}`) would otherwise survive `|| []` and make the
+        // next getState()/getStateForSave() throw on `.map`, wedging every
+        // window and the timer for the rest of the session.
+        let parsed: unknown;
         try {
-            // Parse before assigning anything so a corrupt state column can't
-            // leave the singleton half-hydrated.
-            const state = JSON.parse(saved.state as string);
-            // JSON.parse('null') succeeds and returns null, and arrays/numbers
-            // parse too — so the parse alone doesn't prove the payload is
-            // usable. Everything below reads fields off it; reject a non-object
-            // before committing any in-memory field.
-            if (!state || typeof state !== 'object' || Array.isArray(state)) {
-                throw new Error('saved tournament state is not an object');
-            }
-            const levels: Level[] = Array.isArray(state.levels) ? state.levels : [];
-            // A stale/corrupt index must not point past the levels array.
-            const maxIndex = Math.max(0, levels.length - 1);
-            const currentLevelIndex = Number.isInteger(state.currentLevelIndex)
-                ? Math.min(Math.max(state.currentLevelIndex, 0), maxIndex)
-                : 0;
-
-            this.tournamentId = saved.id;
-            devLog('Restoring tournament state for ID:', this.tournamentId);
-            this.name = saved.name;
-            this.levels = levels;
-            this.currentLevelIndex = currentLevelIndex;
-            // Fall back to the level actually being restored, not level 0.
-            this.timeLeftInLevel = state.timeLeftInLevel ?? levels[currentLevelIndex]?.duration ?? 0;
-            this.isPaused = true; // Always pause on restore/switch
-            this.totalEntries = state.totalEntries ?? 0;
-            // Fallbacks keep a partial/older snapshot from hydrating into
-            // undefined/NaN fields that would silently corrupt later math.
-            this.playersRemaining = state.playersRemaining ?? this.totalEntries;
-            this.tables = state.tables || [];
-            this.unassignedPlayers = state.unassignedPlayers || [];
-            this.bustedPlayers = state.bustedPlayers || [];
-            this.autoBalance = state.autoBalance ?? true;
-            this.autoMerge = state.autoMerge ?? true;
-            this.shuffleFinalTable = state.shuffleFinalTable ?? false;
-            // `??` only catches null/undefined — a corrupt 0 or negative value
-            // would make ensureSeatCapacity add 0-seat tables forever, and a
-            // huge one would hang the process, so validate like initialize().
-            this.playersPerTable = normalizePlayersPerTable(state.playersPerTable);
-            this.startingChips = state.startingChips ?? 0;
-            this.elapsedTime = state.elapsedTime ?? 0;
-            this.prizes = state.prizes ?? [];
-            // Fall back to the row's snapshot the same way currency does: an
-            // older running snapshot predating entryFee in state would
-            // otherwise hydrate 0 and finalize every result with a wrong
-            // entry_fee even though the Tournaments row itself is correct.
-            this.entryFee = state.entryFee ?? saved.entry_fee ?? 0;
-            this.bustElapsed = state.bustElapsed ?? {};
-            // Newer snapshots carry the currency; older ones don't, but the
-            // Tournaments row has had a currency column since it was introduced.
-            this.currency = state.currency ?? saved.currency ?? '';
+            parsed = JSON.parse(saved.state as string);
         } catch (e) {
             console.error('Failed to parse saved tournament state', e);
+            return;
         }
+        // JSON.parse('null') succeeds and returns null, and arrays/numbers
+        // parse too — reject a non-object before committing anything.
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            console.error('Saved tournament state is not an object');
+            return;
+        }
+        const state = parsed as Record<string, unknown>;
+
+        const num = (v: unknown, dflt: number): number =>
+            typeof v === 'number' && Number.isFinite(v) ? v : dflt;
+        const bool = (v: unknown, dflt: boolean): boolean =>
+            typeof v === 'boolean' ? v : dflt;
+        const asArray = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+        const isObj = (v: unknown): v is Record<string, unknown> =>
+            !!v && typeof v === 'object' && !Array.isArray(v);
+
+        const levels: Level[] = asArray(state.levels).filter(isObj).map(l => ({
+            smallBlind: num(l.smallBlind, 0),
+            bigBlind: num(l.bigBlind, 0),
+            ante: typeof l.ante === 'number' ? l.ante : undefined,
+            duration: num(l.duration, 0),
+            isBreak: !!l.isBreak,
+        }));
+        const asPlayer = (p: unknown): Player | null => {
+            if (!isObj(p) || typeof p.name !== 'string') return null;
+            return {
+                id: typeof p.id === 'number' ? p.id : undefined,
+                name: p.name,
+                nickname: typeof p.nickname === 'string' ? p.nickname : undefined,
+                photo_path: typeof p.photo_path === 'string' ? p.photo_path : undefined,
+            };
+        };
+        const asPlayerPool = (v: unknown): Player[] =>
+            asArray(v).map(asPlayer).filter((p): p is Player => p !== null);
+        const tables: Table[] = asArray(state.tables).filter(isObj).map((t, ti) => ({
+            tableNumber: num(t.tableNumber, ti + 1),
+            seats: asArray(t.seats).filter(isObj).map((s, si) => ({
+                seatNumber: num(s.seatNumber, si + 1),
+                player: asPlayer(s.player),
+            })),
+        }));
+        const prizes: Prize[] = asArray(state.prizes)
+            .filter(isObj)
+            .map(p => ({ place: num(p.place, 0), amount: num(p.amount, 0) }))
+            .filter(p => p.place > 0);
+        const bustElapsed: Record<number, number> = {};
+        if (isObj(state.bustElapsed)) {
+            for (const [key, value] of Object.entries(state.bustElapsed)) {
+                const id = Number(key);
+                if (Number.isFinite(id) && typeof value === 'number' && Number.isFinite(value)) {
+                    bustElapsed[id] = value;
+                }
+            }
+        }
+
+        // A stale/corrupt index must not point past the levels array.
+        const maxIndex = Math.max(0, levels.length - 1);
+        const currentLevelIndex = Number.isInteger(state.currentLevelIndex)
+            ? Math.min(Math.max(state.currentLevelIndex as number, 0), maxIndex)
+            : 0;
+
+        // All validation passed — commit to memory.
+        this.tournamentId = saved.id;
+        devLog('Restoring tournament state for ID:', this.tournamentId);
+        this.name = saved.name;
+        this.levels = levels;
+        this.currentLevelIndex = currentLevelIndex;
+        // Fall back to the level actually being restored, not level 0.
+        this.timeLeftInLevel = num(state.timeLeftInLevel, levels[currentLevelIndex]?.duration ?? 0);
+        this.isPaused = true; // Always pause on restore/switch
+        this.totalEntries = num(state.totalEntries, 0);
+        // Fallbacks keep a partial/older snapshot from hydrating into
+        // undefined/NaN fields that would silently corrupt later math.
+        this.playersRemaining = num(state.playersRemaining, this.totalEntries);
+        this.tables = tables;
+        this.unassignedPlayers = asPlayerPool(state.unassignedPlayers);
+        this.bustedPlayers = asPlayerPool(state.bustedPlayers);
+        this.autoBalance = bool(state.autoBalance, true);
+        this.autoMerge = bool(state.autoMerge, true);
+        this.shuffleFinalTable = bool(state.shuffleFinalTable, false);
+        // `??` only catches null/undefined — a corrupt 0 or negative value
+        // would make ensureSeatCapacity add 0-seat tables forever, and a
+        // huge one would hang the process, so validate like initialize().
+        this.playersPerTable = normalizePlayersPerTable(state.playersPerTable);
+        this.startingChips = num(state.startingChips, 0);
+        this.elapsedTime = num(state.elapsedTime, 0);
+        this.prizes = prizes;
+        // Fall back to the row's snapshot the same way currency does: an
+        // older running snapshot predating entryFee in state would otherwise
+        // hydrate 0 and finalize every result with a wrong entry_fee even
+        // though the Tournaments row itself is correct.
+        this.entryFee = num(state.entryFee, num(saved.entry_fee, 0));
+        this.bustElapsed = bustElapsed;
+        // Newer snapshots carry the currency; older ones don't, but the
+        // Tournaments row has had a currency column since it was introduced.
+        this.currency = typeof state.currency === 'string'
+            ? state.currency
+            : (typeof saved.currency === 'string' ? saved.currency : '');
     }
 
     public addWindow(window: BrowserWindow) {
@@ -523,7 +582,15 @@ export class TournamentManager {
         // saved snapshot until the next level change.
         if (!Number.isFinite(seconds)) return;
         this.timeLeftInLevel = Math.max(0, Math.min(seconds, cur.duration));
-        if (!this.isPaused) this.anchorTimer();
+        if (!this.isPaused) {
+            // Reconcile wall-clock time BEFORE re-anchoring, exactly like
+            // bustPlayer(): anchorTimer() would otherwise take the stale
+            // elapsedTime from the last tick and drop every second the main
+            // process was stalled (OS suspend, long DB op) — understating
+            // survivors' recorded playtime permanently.
+            this.syncElapsed();
+            this.anchorTimer();
+        }
         this.broadcastState();
     }
 
@@ -533,7 +600,10 @@ export class TournamentManager {
         this.currentLevelIndex++;
         this.timeLeftInLevel = this.levels[this.currentLevelIndex].duration;
         this.emitSoundCue(this.levels[this.currentLevelIndex].isBreak ? 'break-start' : 'level-start');
-        if (!this.isPaused) this.anchorTimer();
+        if (!this.isPaused) {
+            this.syncElapsed();
+            this.anchorTimer();
+        }
         this.broadcastState();
     }
 
@@ -548,7 +618,10 @@ export class TournamentManager {
             this.currentLevelIndex--;                            // start of previous
             this.timeLeftInLevel = this.levels[this.currentLevelIndex].duration;
         }
-        if (!this.isPaused) this.anchorTimer();
+        if (!this.isPaused) {
+            this.syncElapsed();
+            this.anchorTimer();
+        }
         this.broadcastState();
     }
 
@@ -1007,6 +1080,18 @@ export class TournamentManager {
         // Simple balancing: take from max table, give to min table.
         // Repeat until balanced.
         // Balanced means max - min <= 1.
+
+        // Only pause the clock if a move can actually happen. With mixed table
+        // sizes (randomizeSeating can adopt a new playersPerTable
+        // mid-tournament) the min-count table can be physically full and no
+        // other table may have a free seat — pausing here would stop a live
+        // clock for a no-op rebalance the operator can't even see.
+        const counts = this.tables.map(t => t.seats.filter(s => s.player).length);
+        const maxCount = Math.max(...counts);
+        const canMove = this.tables.some(t =>
+            t.seats.filter(s => s.player).length < maxCount &&
+            t.seats.some(s => s.player === null));
+        if (!canMove) return;
 
         // Like merge and final-table, players are never moved with the blinds
         // clock running — the operator restarts it once everyone is settled.

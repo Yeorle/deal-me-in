@@ -78,7 +78,7 @@ On the Control Panel tournament card:
 
 ### Busting and un-busting players
 
-In the **Manage Players** window:
+In the **Manage Players** panel:
 
 - Click **Bust** on a seated player when they're eliminated. Their seat empties and "players remaining" decreases. The app then auto-balances or auto-merges if enabled.
 - Click **Unbust** to bring a player back — they return to **unassigned** and must be re-seated (Randomize or drag). You can still pause the clock while they're unassigned.

@@ -114,7 +114,9 @@ const ProjectorView: React.FC = () => {
         return formatHMS(remaining);
     })();
 
-    const sortedPrizes = [...timerState.prizes].sort((a, b) => a.place - b.place);
+    // Match the control panel: a sparse/restored prize snapshot with a 0
+    // amount must not render "3rd: €0" on the projector.
+    const sortedPrizes = [...timerState.prizes].filter(p => p.amount > 0).sort((a, b) => a.place - b.place);
 
     const background = projector.backgroundType === 'image' && projector.backgroundImage
         ? `center / cover no-repeat url("${mediaUrl(projector.backgroundImage)}")`
@@ -288,7 +290,7 @@ const ProjectorView: React.FC = () => {
                     <div className="flex flex-col items-center">
                         <div className="text-[1.5vw] text-[color:var(--proj-ink-muted)] uppercase tracking-[0.25em] mb-2">{t('projector.avgStack')}</div>
                         <div className="text-[4vw] tabular text-[color:var(--proj-ink)] leading-none">
-                            {averageStack > 0 ? averageStack.toLocaleString() : '—'}
+                            {averageStack > 0 ? averageStack.toLocaleString(language === 'fr' ? 'fr-FR' : 'en-US') : '—'}
                         </div>
                     </div>
                 </div>

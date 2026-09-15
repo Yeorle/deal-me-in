@@ -10,6 +10,9 @@ interface ConfirmationModalProps {
     checkboxLabel?: string;
     confirmButtonText: string;
     isDestructive?: boolean;
+    // Optional failure text shown in place of nothing when the confirmed
+    // action rejects — keeps the modal open for a retry.
+    error?: string | null;
 }
 
 const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
@@ -20,7 +23,8 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
     message,
     checkboxLabel,
     confirmButtonText,
-    isDestructive = false
+    isDestructive = false,
+    error = null
 }) => {
     const { t } = useSettings();
     const [hasConfirmed, setHasConfirmed] = useState(false);
@@ -76,6 +80,8 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
                         {checkboxLabel}
                     </label>
                 )}
+
+                {error && <p className="text-xs text-danger mb-4">{error}</p>}
 
                 <div className="flex justify-end gap-2">
                     <button

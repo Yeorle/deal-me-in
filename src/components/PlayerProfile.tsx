@@ -23,6 +23,8 @@ const PlayerProfile: React.FC = () => {
     const [existingPhotoPath, setExistingPhotoPath] = useState<string | undefined>(undefined);
     const [justSaved, setJustSaved] = useState(false);
     const [saveError, setSaveError] = useState(false);
+    const [validationError, setValidationError] = useState<string | null>(null);
+    const [isSaving, setIsSaving] = useState(false);
     const [loadFailed, setLoadFailed] = useState(false);
     // Object URL for the freshly picked file — a picked path is outside the
     // media:// allowlist, so mediaUrl() would 403 on it.
@@ -99,8 +101,14 @@ const PlayerProfile: React.FC = () => {
 
     const handleSave = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!name.trim() || !id) return;
+        if (isSaving) return;
+        if (!name.trim() || !id) {
+            setValidationError(t('players.validationName'));
+            return;
+        }
+        setValidationError(null);
         setSaveError(false);
+        setIsSaving(true);
         try {
             await window.api.updatePlayer({
                 id: Number(id),
@@ -110,17 +118,19 @@ const PlayerProfile: React.FC = () => {
                 photoPath,
                 photo_path: existingPhotoPath,
             });
-            setJustSaved(true);
-            if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
-            savedTimerRef.current = setTimeout(() => setJustSaved(false), 1500);
         } catch (err) {
             console.error('Failed to save player', err);
             setSaveError(true);
             // Keep the user's edits: reloading now would silently replace the
             // form with DB values (and discard everything typed) on top of a
             // transient error chip.
+            setIsSaving(false);
             return;
         }
+        setIsSaving(false);
+        setJustSaved(true);
+        if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+        savedTimerRef.current = setTimeout(() => setJustSaved(false), 1500);
         await load();
     };
 
@@ -159,7 +169,7 @@ const PlayerProfile: React.FC = () => {
                     <div className="space-y-3">
                         <div>
                             <label className="block text-micro uppercase text-ink-muted mb-1.5">{t('players.name')}</label>
-                            <input type="text" value={name} onChange={(e) => setName(e.target.value)} className={inputClass} />
+                            <input type="text" value={name} onChange={(e) => { setName(e.target.value); if (validationError) setValidationError(null); }} className={inputClass} />
                         </div>
                         <div>
                             <label className="block text-micro uppercase text-ink-muted mb-1.5">{t('players.nickname')}</label>
@@ -187,9 +197,14 @@ const PlayerProfile: React.FC = () => {
                         </div>
                     </div>
                     <div className="mt-5 flex justify-end items-center gap-3">
-                        {saveError && <span className="text-xs text-danger">{t('common.error')}</span>}
-                        {justSaved && !saveError && <span className="text-xs text-accent">{t('profile.saved')}</span>}
-                        <button type="submit" className="bg-accent text-white px-4 py-2 rounded text-sm font-medium hover:bg-accent-600 transition-colors">
+                        {validationError && <span className="text-xs text-danger">{validationError}</span>}
+                        {saveError && !validationError && <span className="text-xs text-danger">{t('common.error')}</span>}
+                        {justSaved && !saveError && !validationError && <span className="text-xs text-accent">{t('profile.saved')}</span>}
+                        <button
+                            type="submit"
+                            disabled={isSaving}
+                            className="bg-accent text-white px-4 py-2 rounded text-sm font-medium hover:bg-accent-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
                             {t('common.save')}
                         </button>
                     </div>

@@ -84,6 +84,7 @@ export function initDB() {
     db!.exec('CREATE INDEX IF NOT EXISTS idx_results_tournament ON TournamentResults(tournament_id)');
     db!.exec('CREATE INDEX IF NOT EXISTS idx_results_player ON TournamentResults(player_id)');
     migrateSchema(db!);
+    scrubLegacyEmailFromStates(db!);
   })();
 
 // Seed default data — only on a brand-new database. An existing-but-empty
@@ -152,6 +153,38 @@ function migrateSchema(database: Database.Database) {
   }
 }
 
+// One-time, idempotent cleanup for databases written before the tournament
+// state snapshots were PII-sanitized: they may still embed `email` on players
+// in tables/unassigned/busted. getStateForSave() no longer writes it, but the
+// stale copies would otherwise be packed verbatim into every exported backup
+// ("shareable archive"). Removing it is safe — the engine never reads it.
+function scrubLegacyEmailFromStates(database: Database.Database) {
+  const rows = database.prepare('SELECT id, state FROM Tournaments').all() as { id: number; state: string | null }[];
+  const update = database.prepare('UPDATE Tournaments SET state = ? WHERE id = ?');
+  for (const row of rows) {
+    if (!row.state) continue;
+    try {
+      const state = JSON.parse(row.state);
+      if (!state || typeof state !== 'object' || Array.isArray(state)) continue;
+      let changed = false;
+      const strip = (p: unknown) => {
+        if (p && typeof p === 'object' && !Array.isArray(p) && 'email' in p) {
+          delete (p as Record<string, unknown>).email;
+          changed = true;
+        }
+      };
+      for (const table of state.tables ?? []) {
+        for (const seat of table.seats ?? []) strip(seat.player);
+      }
+      for (const p of state.unassignedPlayers ?? []) strip(p);
+      for (const p of state.bustedPlayers ?? []) strip(p);
+      if (changed) update.run(JSON.stringify(state), row.id);
+    } catch {
+      // Unparseable snapshot — leave it alone.
+    }
+  }
+}
+
 export function getDB() {
   if (!db) {
     throw new Error('Database not initialized!');
@@ -210,10 +243,13 @@ function tryUnlink(filePath: string) {
   }
 }
 
-// Blank a player's PII inside every tournament's `state` JSON snapshot.
+// Remove a player's trace from every tournament's `state` JSON snapshot.
 // Snapshots embed full Player objects (tables / unassignedPlayers /
-// bustedPlayers) and outlive the player row, so "delete player" must scrub
-// them too or the data would remain readable in the DB indefinitely.
+// bustedPlayers) and outlive the player row, so "delete player" must drop them
+// everywhere or the data would remain readable in the DB indefinitely — and a
+// still-running (but not currently loaded) tournament would keep the player
+// seated and later write a result row for them. This mirrors what
+// TournamentManager.removePlayerFromTournament does to the live singleton.
 function scrubPlayerFromTournamentStates(playerId: number) {
   const rows = getDB().prepare('SELECT id, state FROM Tournaments').all() as { id: number; state: string | null }[];
   const update = getDB().prepare('UPDATE Tournaments SET state = ? WHERE id = ?');
@@ -221,21 +257,53 @@ function scrubPlayerFromTournamentStates(playerId: number) {
     if (!row.state) continue;
     try {
       const state = JSON.parse(row.state);
+      if (!state || typeof state !== 'object' || Array.isArray(state)) continue;
       let changed = false;
-      const scrub = (p: { id?: number; name?: string; nickname?: string | null; email?: string | null; photo_path?: string | null } | null | undefined) => {
-        if (p && p.id === playerId) {
-          p.name = '';
-          p.nickname = null;
-          p.email = null;
-          p.photo_path = null;
-          changed = true;
-        }
-      };
+      let wasLive = false;
+
       for (const table of state.tables ?? []) {
-        for (const seat of table.seats ?? []) scrub(seat.player);
+        for (const seat of table.seats ?? []) {
+          if (seat.player && seat.player.id === playerId) {
+            seat.player = null;
+            wasLive = true;
+            changed = true;
+          }
+        }
       }
-      for (const p of state.unassignedPlayers ?? []) scrub(p);
-      for (const p of state.bustedPlayers ?? []) scrub(p);
+      if (Array.isArray(state.unassignedPlayers)) {
+        const kept = [];
+        for (const p of state.unassignedPlayers) {
+          if (p && p.id === playerId) {
+            wasLive = true;
+            changed = true;
+          } else {
+            kept.push(p);
+          }
+        }
+        if (changed) state.unassignedPlayers = kept;
+      }
+      if (Array.isArray(state.bustedPlayers)) {
+        const kept = [];
+        for (const p of state.bustedPlayers) {
+          if (p && p.id === playerId) {
+            changed = true;
+          } else {
+            kept.push(p);
+          }
+        }
+        if (changed) state.bustedPlayers = kept;
+      }
+      if (state.bustElapsed && typeof state.bustElapsed === 'object' && !Array.isArray(state.bustElapsed)
+        && playerId in state.bustElapsed) {
+        delete state.bustElapsed[playerId];
+        changed = true;
+      }
+      // A live (seated/unassigned) player was counted in playersRemaining;
+      // an already-busted one was not, so only decrement for the former.
+      if (wasLive && typeof state.playersRemaining === 'number') {
+        state.playersRemaining = Math.max(0, state.playersRemaining - 1);
+        changed = true;
+      }
       if (changed) update.run(JSON.stringify(state), row.id);
     } catch {
       // Unparseable snapshot — nothing we can scrub.
@@ -403,7 +471,11 @@ export function getArchivedTournaments() {
 }
 
 export function deleteTournament(id: number) {
-  const stmt = getDB().prepare('DELETE FROM Tournaments WHERE id = ?');
+  // Only archived rows may be deleted. A running tournament (including the one
+  // loaded in the singleton) must go through stop/finalize first — deleting its
+  // row out from under the engine would leave save() updating 0 rows and
+  // finalize() inserting results against a missing FK.
+  const stmt = getDB().prepare("DELETE FROM Tournaments WHERE id = ? AND status = 'archived'");
   return stmt.run(id);
 }
 

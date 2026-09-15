@@ -16,11 +16,11 @@ export const en = {
     'common.cancel': 'Cancel',
     'common.close': 'Close',
     'common.error': 'Something went wrong. Please try again.',
+    'common.loading': 'Loading…',
     'common.save': 'Save',
     'common.delete': 'Delete',
     'common.edit': 'Edit',
     'common.actions': 'Actions',
-    'common.back': 'Back',
     'common.confirmDeletion': 'Confirm Deletion',
     'common.confirmDelete': 'Confirm Delete',
     'common.deletedPlayer': '???',
@@ -38,7 +38,6 @@ export const en = {
     // ControlPanel
     'controlPanel.title': 'Control Panel',
     'controlPanel.newTournament': 'New Tournament',
-    'controlPanel.runningTournaments': 'Running Tournaments',
     'controlPanel.level': 'Level',
     'controlPanel.ant': 'ANT',
     'controlPanel.pause': 'PAUSE',
@@ -50,7 +49,6 @@ export const en = {
     'controlPanel.unassignedPlayers': '{n} unassigned players',
     'controlPanel.unassignedPlayer': '{n} unassigned player',
     'controlPanel.projector': 'PROJECTOR',
-    'controlPanel.players': 'PLAYERS',
     'controlPanel.terminate': 'TERMINATE',
     'controlPanel.controls': 'Controls',
     'controlPanel.elapsed': 'Elapsed',
@@ -64,20 +62,6 @@ export const en = {
     'controlPanel.otherRunning': 'Other Running Tournaments',
     'controlPanel.startedAt': 'Started {date}',
     'controlPanel.switchTo': 'Switch to',
-    'controlPanel.archivedTournaments': 'Archived Tournaments',
-    'controlPanel.noArchives': 'No archived tournaments.',
-    'controlPanel.colName': 'Name',
-    'controlPanel.colStarted': 'Started',
-    'controlPanel.colEnded': 'Ended',
-    'controlPanel.deleteAction': 'Delete',
-    'controlPanel.terminateTitle': 'Terminate Tournament?',
-    'controlPanel.terminateMessage': 'Are you sure you want to terminate the current tournament? This will move it to archives. This action cannot be undone.',
-    'controlPanel.terminateCheckbox': 'I confirm I want to terminate this tournament',
-    'controlPanel.terminateConfirm': 'Confirm Terminate',
-    'controlPanel.deleteArchiveTitle': 'Delete Archived Tournament',
-    'controlPanel.deleteArchiveMessage': 'Are you sure you want to delete this archived tournament? This record will be permanently removed.',
-    'controlPanel.deleteArchiveCheckbox': 'I confirm I want to delete this archive',
-    'controlPanel.deleteArchiveConfirm': 'Delete Archive',
 
     // TournamentCreator
     'creator.title': 'New Tournament',
@@ -133,20 +117,18 @@ export const en = {
 
     // PlayerManagement
     'players.title': 'Player Management',
-    'players.editPlayer': 'Edit Player',
     'players.addNewPlayer': 'Add New Player',
-    'players.cancelEdit': 'Cancel Edit',
     'players.name': 'Name',
     'players.nickname': 'Nickname',
     'players.email': 'Email',
     'players.photo': 'Photo',
     'players.updatePhoto': 'Update Photo (optional)',
-    'players.updatePlayer': 'Update Player',
     'players.addPlayer': 'Add Player',
     'players.id': 'ID',
     'players.noPlayers': 'No players yet.',
     'players.confirmDeletionMessage': 'Are you sure you want to delete this player? This action cannot be undone.',
     'players.confirmDeletionCheckbox': 'I confirm I want to delete this player',
+    'players.validationName': 'A name is required.',
 
     // StructureList
     'structureList.title': 'Tournament Structures',
@@ -188,7 +170,6 @@ export const en = {
     'editor.notFound': 'The requested structure could not be found. Saving would create a new structure.',
 
     // ManagePlayersModal
-    'manage.title': 'Manage Players',
     'manage.searchPlaceholder': 'Search players...',
     'manage.table': 'Table',
     'manage.dropHere': 'Drop here',
@@ -205,7 +186,6 @@ export const en = {
     'manage.bustTitle': 'Bust Player?',
     'manage.bustMessage': 'Are you sure you want to bust {name}? They will be removed from their seat.',
     'manage.bustConfirm': 'Bust',
-    'manage.closeAriaLabel': 'Close',
 
     // SeatMovePopup
     'seatMoves.title': 'Seat Movements',
@@ -356,11 +336,11 @@ export const fr: Record<TranslationKey, string> = {
     'common.cancel': 'Annuler',
     'common.close': 'Fermer',
     'common.error': 'Une erreur est survenue. Veuillez réessayer.',
+    'common.loading': 'Chargement…',
     'common.save': 'Enregistrer',
     'common.delete': 'Supprimer',
     'common.edit': 'Modifier',
     'common.actions': 'Actions',
-    'common.back': 'Retour',
     'common.confirmDeletion': 'Confirmer la suppression',
     'common.confirmDelete': 'Confirmer',
     'common.deletedPlayer': '???',
@@ -378,7 +358,6 @@ export const fr: Record<TranslationKey, string> = {
     // ControlPanel
     'controlPanel.title': 'Panneau de contrôle',
     'controlPanel.newTournament': 'Nouveau tournoi',
-    'controlPanel.runningTournaments': 'Tournois en cours',
     'controlPanel.level': 'Niveau',
     'controlPanel.ant': 'ANT',
     'controlPanel.pause': 'PAUSE',
@@ -390,7 +369,6 @@ export const fr: Record<TranslationKey, string> = {
     'controlPanel.unassignedPlayers': '{n} joueurs non assignés',
     'controlPanel.unassignedPlayer': '{n} joueur non assigné',
     'controlPanel.projector': 'PROJECTEUR',
-    'controlPanel.players': 'JOUEURS',
     'controlPanel.terminate': 'TERMINER',
     'controlPanel.controls': 'Contrôles',
     'controlPanel.elapsed': 'Écoulé',
@@ -404,20 +382,6 @@ export const fr: Record<TranslationKey, string> = {
     'controlPanel.otherRunning': 'Autres tournois en cours',
     'controlPanel.startedAt': 'Commencé {date}',
     'controlPanel.switchTo': 'Basculer',
-    'controlPanel.archivedTournaments': 'Tournois archivés',
-    'controlPanel.noArchives': 'Aucun tournoi archivé.',
-    'controlPanel.colName': 'Nom',
-    'controlPanel.colStarted': 'Début',
-    'controlPanel.colEnded': 'Fin',
-    'controlPanel.deleteAction': 'Supprimer',
-    'controlPanel.terminateTitle': 'Terminer le tournoi ?',
-    'controlPanel.terminateMessage': 'Êtes-vous sûr de vouloir terminer le tournoi en cours ? Il sera déplacé dans les archives. Cette action est irréversible.',
-    'controlPanel.terminateCheckbox': 'Je confirme vouloir terminer ce tournoi',
-    'controlPanel.terminateConfirm': 'Confirmer la fin',
-    'controlPanel.deleteArchiveTitle': 'Supprimer le tournoi archivé',
-    'controlPanel.deleteArchiveMessage': 'Êtes-vous sûr de vouloir supprimer ce tournoi archivé ? Cet enregistrement sera supprimé définitivement.',
-    'controlPanel.deleteArchiveCheckbox': 'Je confirme vouloir supprimer cette archive',
-    'controlPanel.deleteArchiveConfirm': 'Supprimer l\'archive',
 
     // TournamentCreator
     'creator.title': 'Nouveau tournoi',
@@ -473,20 +437,18 @@ export const fr: Record<TranslationKey, string> = {
 
     // PlayerManagement
     'players.title': 'Gestion des joueurs',
-    'players.editPlayer': 'Modifier le joueur',
     'players.addNewPlayer': 'Ajouter un joueur',
-    'players.cancelEdit': 'Annuler la modification',
     'players.name': 'Nom',
     'players.nickname': 'Surnom',
     'players.email': 'E-mail',
     'players.photo': 'Photo',
     'players.updatePhoto': 'Modifier la photo (optionnel)',
-    'players.updatePlayer': 'Mettre à jour',
     'players.addPlayer': 'Ajouter le joueur',
     'players.id': 'ID',
     'players.noPlayers': 'Aucun joueur pour le moment.',
     'players.confirmDeletionMessage': 'Êtes-vous sûr de vouloir supprimer ce joueur ? Cette action est irréversible.',
     'players.confirmDeletionCheckbox': 'Je confirme vouloir supprimer ce joueur',
+    'players.validationName': 'Un nom est requis.',
 
     // StructureList
     'structureList.title': 'Structures de tournoi',
@@ -528,7 +490,6 @@ export const fr: Record<TranslationKey, string> = {
     'editor.notFound': 'La structure demandée est introuvable. Enregistrer créerait une nouvelle structure.',
 
     // ManagePlayersModal
-    'manage.title': 'Gérer les joueurs',
     'manage.searchPlaceholder': 'Rechercher des joueurs...',
     'manage.table': 'Table',
     'manage.dropHere': 'Déposer ici',
@@ -545,7 +506,6 @@ export const fr: Record<TranslationKey, string> = {
     'manage.bustTitle': 'Éliminer le joueur ?',
     'manage.bustMessage': 'Êtes-vous sûr de vouloir éliminer {name} ? Il sera retiré de son siège.',
     'manage.bustConfirm': 'Éliminer',
-    'manage.closeAriaLabel': 'Fermer',
 
     // SeatMovePopup
     'seatMoves.title': 'Mouvements de sièges',

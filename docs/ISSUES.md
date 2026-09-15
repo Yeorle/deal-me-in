@@ -343,6 +343,135 @@ has a regression test; the suite grew 66 → 75.
 
 ---
 
+## Round 6 review (2026-09-15)
+
+A sixth full pass, run as four parallel deep-dives (tournament engine; db/backup/
+main/preload + configs; renderer; tests/i18n/build/docs/type-drift) over the
+post-round-5 code. Baseline was green (`tsc`, `tsc -p tsconfig.node.json`, lint,
+75 tests). Suite grew 75 → 81.
+
+### Engine (`electron/tournament.ts`)
+
+- **`applySavedRow` accepted wrong-typed inner containers** — round 5 only
+  shape-checked the top-level snapshot, so `tables: {}` / `unassignedPlayers:
+  "x"` / `prizes: {}` survived the `|| []` guards. The next
+  `getState()`/`getStateForSave()`/`getStandings()` then threw on `.map`/`.find`,
+  wedging every window and the timer (and, after an import, making
+  `reloadFromDb()` fail *post-commit*). Every field is now validated/coerced
+  into typed locals **before** any in-memory field is committed.
+- **Skipping a level during a main-process stall discarded playtime** —
+  `setTimeLeftInLevel`/`goToNextLevel`/`goToPreviousLevel` re-anchored the clock
+  without first reconciling the wall clock, so every second since the last tick
+  (OS suspend, long DB op) was dropped permanently and understated survivors'
+  `playtime_sec`. They now `syncElapsed()` first, exactly like `bustPlayer()`.
+- **`balanceTables` paused the clock even when it could not move anyone** —
+  with mixed table sizes and every smaller table physically full, it stopped a
+  live clock for a no-op rebalance. It now returns before pausing unless a move
+  is possible.
+- **`load()` did not broadcast** — a window registered before the startup
+  hydration kept rendering the empty pre-load state until the next tick. `load()`
+  now broadcasts (and `reloadFromDb()` relies on that instead of double-broadcasting).
+
+### Data integrity / main process
+
+- **Import mixed up pre-commit and post-commit failures** — a throw from
+  `reloadFromDb()` (which runs *after* the DB swap) fell into the generic catch
+  that assumed nothing was written, restarted the clock and skipped the window
+  reload. Rehydration is now its own best-effort step after the committed swap.
+- **`db:delete-tournament` could delete a running row** — including the
+  singleton's, which left `save()` updating 0 rows and `finalize()` inserting
+  against a missing FK. The statement now only deletes `status = 'archived'`.
+- **Deleting a player left them in every non-live running tournament** —
+  `removePlayerFromTournament` only cleaned the live singleton; the DB scrub
+  blanked PII but kept the player seated in other running snapshots, so
+  switching to one still showed them and a later finalize wrote a result row for
+  a soft-deleted player. The scrub now removes them from every snapshot's
+  seats/pools/`bustElapsed` and decrements `playersRemaining`, mirroring the
+  live path.
+- **Replacing/clearing a projector image orphaned the old file forever** —
+  `db:set-setting` now diffs the previous and next `projectorTheme` values and
+  unlinks replaced files under `userData/projector` (best-effort, allow-listed).
+- **`importFileToUserData` copied any path the renderer named** — the `media://`
+  allow-list only constrained the *served* path, so a compromised renderer could
+  copy an arbitrary readable file into `userData` (or a directory, which threw).
+  The source must now be a regular file within a size cap.
+- **`new URL(request.url)` sat outside the `media://` try** — a malformed request
+  URL could throw out of the protocol handler; it is now inside the guard.
+- **Legacy `email` in pre-sanitization snapshots was exported verbatim** — an
+  idempotent startup scrub (`scrubLegacyEmailFromStates`) now strips the unused
+  field from every embedded player so old databases can't leak it into a
+  "shareable" backup.
+- **`tournament:create` accepted negative money** — a negative `entryFee` or
+  prize amount propagated straight into `TournamentResults` (earnings are
+  `prize − entry_fee`). Both are now validated/sanitized at the IPC boundary,
+  and `playerIds` must be an array.
+- **Windows/Linux had no way back to the control panel** once it was closed while
+  a projector/editor window stayed open (macOS `activate` has no equivalent). A
+  minimal application menu with "Show Control Panel" (`Ctrl/Cmd+Shift+M`) and
+  Quit is now installed on non-macOS platforms.
+
+### Renderer
+
+- **Finalize modal rendered the previous tournament's data on reopen** — the
+  component stays mounted while closed and never cleared its state, so reopening
+  (after finalizing another tournament) briefly showed stale players/prizes/fees
+  and let a fast operator persist a wrong survivor order. It now clears state and
+  shows a loading gate until the new fetch resolves.
+- **"All players are busted." before the first seating** — `ManagePlayersPanel`
+  only checked `activeTables.length === 0`, which is also true while everyone is
+  still unassigned. The message now requires busted players and no unassigned.
+- **StructureEditor kept a stale `editId` on a failed/missing load** — the
+  reused editor window would then update the previously loaded structure instead
+  of creating the requested one. Failure and id-less routes now reset the form.
+- **PlayerProfile Save was a silent no-op on an empty name** and had no
+  in-flight guard (double submit / double photo import). Added a validation
+  message and disabled the button while saving.
+- **Player/Tournament delete failures were swallowed** (PlayerManagement kept
+  the modal open with no text; TournamentHistory closed it). Both now surface an
+  inline error and keep the modal for a retry (`ConfirmationModal` gained an
+  optional `error` slot).
+- **ProjectorView showed zero-amount prizes** the control panel hides, and both
+  ProjectorView and StructureList formatted numbers with the host locale instead
+  of the selected language.
+- **SettingsContext initial fetch could overwrite a newer broadcast**; it now
+  applies the same "broadcast already arrived" guard as ControlPanel/ProjectorView.
+- **Imported 3/4/8-digit hex colors** were fed straight into `<input type="color">`
+  (black swatch + React warning); projector colors are normalized to 6-digit hex.
+- `addPlayer`/`updatePlayer` were typed `Promise<void>` but return the SQLite run
+  result; the renderer typings now match.
+
+### Tests, i18n, docs
+
+- **The auto-balance test was vacuous** — it never started the clock, so the
+  `isPaused` assertion passed with or without the H3 fix. It now starts the timer
+  first. The finalize fallback test now asserts the actual survivor order.
+- Added regressions for the wrong-typed snapshot, stalled-skip elapsed time,
+  final-table collapse drawing in unassigned players, `computeTimeUntilNextBreak`,
+  `load()` broadcasting, and the `MediaExtractionError` committed-swap path
+  (81 tests).
+- Removed 22 verified-dead i18n keys; added `common.loading` and
+  `players.validationName` (en + fr parity kept).
+- Doc drift fixed: `npm run build`'s node-config typecheck step (CLAUDE.md /
+  README / ARCHITECTURE), lint scope and test description (CLAUDE.md), the CI
+  check list (CONTRIBUTING/README), the USER_GUIDE "Manage Players window"
+  wording, and the stale `db.ts` line anchor in ARCHITECTURE.
+
+### Known-accepted / remaining gaps (not fixed)
+
+- **Backup error messages are still English-only** — `result.error` from the main
+  process is interpolated into the localized export/import error sentence. Fixing
+  it properly needs keyed error codes end-to-end.
+- **The zip-bomb guard trusts each entry's declared uncompressed size** — an
+  archive that lies about its sizes can still inflate synchronously on the main
+  process. Bounding actual output needs streaming decompression.
+- `db.ts` (soft delete, scrub, running-delete guard) remains untestable under
+  Vitest (native ABI) and is only manually verified.
+- `PersistedTournamentState` is still untyped; the remaining modals (finalize,
+  seat-move, creator, inline delete) still lack the dialog semantics added to
+  `ConfirmationModal`; `input` labels remain unassociated (`htmlFor`).
+
+---
+
 ## 🔴 Critical
 
 ### C1. Un-busting after an auto-merge can deadlock the tournament

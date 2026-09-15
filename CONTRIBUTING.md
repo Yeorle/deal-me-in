@@ -14,12 +14,14 @@ npm run dev    # Vite dev server + Electron with hot-module reload
 
 ## Before opening a pull request
 
-All three checks must pass (CI runs them on every PR):
+All five checks must pass (CI runs them on every push/PR):
 
 ```bash
-npm run lint       # ESLint, zero-warning policy
-npx tsc --noEmit   # type-check both the renderer and main process
-npm run test       # Vitest unit tests for the tournament engine
+npm run lint                    # ESLint over the repo, zero-warning policy
+npx tsc --noEmit                # type-check the renderer and main process
+npx tsc -p tsconfig.node.json --noEmit   # type-check the Vite configs
+npx vite build                  # the production bundle must build
+npm run test                    # Vitest unit tests (engine + backup logic)
 ```
 
 If you change the tournament engine (`electron/tournament.ts`), please add or

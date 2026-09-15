@@ -227,7 +227,7 @@ payloads to cached `Audio` elements).
 
 ## Data model
 
-Five tables (see [db.ts:14-70](../electron/db.ts#L14-L70)):
+Five tables (see [db.ts:21-76](../electron/db.ts#L21-L76)):
 
 ```
 Players            id · name · nickname · email · photo_path · is_deleted
@@ -323,7 +323,7 @@ Sound cues are bundled mp3s in `src/assets/sounds/`, played only in the primary 
 ## Build and packaging
 
 - `npm run dev` — Vite dev server + Electron with HMR for both processes.
-- `npm run build` — `tsc` (typecheck only) → `vite build` (renderer to `dist/`, main/preload to `dist-electron/` via `vite-plugin-electron`) → `electron-builder` (config in `electron-builder.json5`; artifacts under `release/<version>/`, git-ignored).
+- `npm run build` — `tsc` (typecheck only, app) → `tsc -p tsconfig.node.json --noEmit` (Vite configs) → `vite build` (renderer to `dist/`, main/preload to `dist-electron/` via `vite-plugin-electron`) → `electron-builder` (config in `electron-builder.json5`; artifacts under `release/<version>/`, git-ignored).
 - `npm run lint` — ESLint over the repo with `--max-warnings 0`.
 - **`better-sqlite3` is a native module**: it is declared `external` in the main-process Rollup options (`vite.config.ts`) and rebuilt against Electron's ABI by electron-builder's own `npmRebuild` step during packaging. Do not try to bundle it.
 - The two TypeScript "projects" (`tsconfig.json` includes both `src/` and `electron/`; `tsconfig.node.json` covers the Vite config files) are why type declarations are duplicated across the process boundary — when changing a shared shape, update **both** `electron/tournament.ts` and `src/types.d.ts` (the `/edit-tournament-state` skill enforces this).
