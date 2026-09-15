@@ -181,7 +181,7 @@ const ManagePlayersPanel: React.FC<ManagePlayersPanelProps> = ({ tables, unassig
                             </div>
                         </div>
                     ))}
-                    {activeTables.length === 0 && !searchTerm && (
+                    {activeTables.length === 0 && filteredUnassignedPlayers.length === 0 && filteredBustedPlayers.length > 0 && !searchTerm && (
                         <div className="text-center py-10 text-sm text-ink-muted">{t('manage.allBusted')}</div>
                     )}
                 </div>

@@ -30,8 +30,22 @@ const ALLOWED_ACCENTS: AccentName[] = ['moss', 'slate', 'terracotta', 'plum', 'c
 const ALLOWED_CURRENCIES: CurrencyCode[] = ['EUR', 'USD', 'GBP', 'CHF'];
 const HEX_COLOR = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
 
+// `input type="color"` only accepts #rrggbb, and parseColor also accepts
+// 3/4/6/8-digit hex. Normalize to 6-digit so an imported/hand-edited setting
+// can't leave the swatch black (and React warning) instead of the real color.
+function normalizeHex(value: string): string {
+    const hex = value.slice(1);
+    if (hex.length === 3 || hex.length === 4) {
+        return `#${hex[0]}${hex[0]}${hex[1]}${hex[1]}${hex[2]}${hex[2]}`.toLowerCase();
+    }
+    if (hex.length === 6 || hex.length === 8) {
+        return `#${hex.slice(0, 6)}`.toLowerCase();
+    }
+    return value;
+}
+
 function parseColor(value: unknown, fallback: string): string {
-    return typeof value === 'string' && HEX_COLOR.test(value) ? value : fallback;
+    return typeof value === 'string' && HEX_COLOR.test(value) ? normalizeHex(value) : fallback;
 }
 
 function parseNumber(value: unknown, fallback: number, max: number): number {
@@ -86,8 +100,11 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     useEffect(() => {
         let cancelled = false;
+        // A settings-update broadcast (e.g. from a backup import) can arrive
+        // before the initial fetch resolves; the newer broadcast must win.
+        let receivedBroadcast = false;
         window.api.getSettings().then(raw => {
-            if (cancelled) return;
+            if (cancelled || receivedBroadcast) return;
             const next = parseSettings(raw);
             setSettings(next);
             applyAccent(next.accentColor);
@@ -99,6 +116,7 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         });
 
         const unsub = window.api.onSettingsUpdate(raw => {
+            receivedBroadcast = true;
             const next = parseSettings(raw);
             setSettings(next);
             applyAccent(next.accentColor);

@@ -93,13 +93,16 @@ npm run dev        # Vite dev server + Electron with hot-module reload
 ```bash
 npm run lint       # ESLint over the repo (zero-warning policy)
 npx tsc --noEmit   # type-check without emitting
-npm run test       # Vitest unit tests for the tournament engine (tests/)
+npm run test       # Vitest unit tests (tournament engine + backup logic)
 ```
+
+CI additionally type-checks the Vite configs (`npx tsc -p tsconfig.node.json --noEmit`)
+and runs `npx vite build`.
 
 ## Building a release
 
 ```bash
-npm run build      # tsc type-check → vite build → electron-builder packaging
+npm run build      # tsc type-check (app + configs) → vite build → electron-builder packaging
 ```
 
 Artifacts are written to `release/<version>/`. Targets are configured in

@@ -20,6 +20,7 @@ const PlayerManagement: React.FC = () => {
     const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
     const [playerToDelete, setPlayerToDelete] = useState<number | null>(null);
     const [hasConfirmedDelete, setHasConfirmedDelete] = useState(false);
+    const [deleteError, setDeleteError] = useState(false);
 
 
     const fetchPlayers = async () => {
@@ -63,6 +64,7 @@ const PlayerManagement: React.FC = () => {
         e.stopPropagation();
         setPlayerToDelete(id);
         setHasConfirmedDelete(false);
+        setDeleteError(false);
         setIsDeleteModalOpen(true);
     };
 
@@ -75,6 +77,9 @@ const PlayerManagement: React.FC = () => {
                 fetchPlayers();
             } catch (error) {
                 console.error('Failed to delete player:', error);
+                // Leave the modal open with a visible error so the operator
+                // knows the delete didn't land and can retry.
+                setDeleteError(true);
             }
         }
     };
@@ -225,6 +230,10 @@ const PlayerManagement: React.FC = () => {
                             />
                             {t('players.confirmDeletionCheckbox')}
                         </label>
+
+                        {deleteError && (
+                            <p className="text-xs text-danger mb-4">{t('common.error')}</p>
+                        )}
 
                         <div className="flex justify-end gap-2">
                             <button

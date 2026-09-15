@@ -5,9 +5,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 - `npm run dev` — Vite dev server + Electron with HMR (the only command for local development).
-- `npm run build` — `tsc` typecheck → `vite build` → `electron-builder` packaging (DMG/NSIS/AppImage configured in `electron-builder.json5`).
-- `npm run lint` — ESLint over `src/` and `electron/` with `--max-warnings 0`.
-- `npm run test` — Vitest unit tests for the tournament engine (`tests/`, configured by `vitest.config.ts` — deliberately standalone so the electron Vite plugins don't load). `electron` and `electron/db` are mocked; the engine logic runs under plain Node.
+- `npm run build` — `tsc` typecheck → `tsc -p tsconfig.node.json --noEmit` (covers the Vite configs) → `vite build` → `electron-builder` packaging (DMG/NSIS/AppImage configured in `electron-builder.json5`).
+- `npm run lint` — ESLint over the repo (`eslint . --ext ts,tsx` — also covers `tests/` and the Vite configs) with `--max-warnings 0`.
+- `npm run test` — Vitest unit tests (`tests/`, configured by `vitest.config.ts` — deliberately standalone so the electron Vite plugins don't load). Covers the tournament engine (`tests/tournament.test.ts`) and the pure backup path/JSON layer (`tests/backup.test.ts`). `electron` and `electron/db` are mocked; the logic runs under plain Node.
 
 ## Architecture
 

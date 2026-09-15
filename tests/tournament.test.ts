@@ -248,17 +248,28 @@ describe('auto-merge', () => {
 
 describe('auto-balance', () => {
     it('rebalances when tables differ by 2+ and pauses the clock', () => {
-        const manager = setup({ players: 10, playersPerTable: 5, autoMerge: false });
-        // Bust two players from the same table to force a 3/5 imbalance.
-        const state = manager.getState();
-        const firstTable = state.tables[0];
-        const ids = firstTable.seats.filter(s => s.player).map(s => s.player!.id!);
-        manager.bustPlayer(ids[0]);
-        manager.bustPlayer(ids[1]);
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+        try {
+            vi.setSystemTime(0);
+            const manager = setup({ players: 10, playersPerTable: 5, autoMerge: false });
+            // The clock must actually be running first, otherwise "isPaused"
+            // asserts nothing about balanceTables' pause.
+            manager.startTimer();
+            expect(manager.getState().isPaused).toBe(false);
 
-        const counts = tableCounts(manager);
-        expect(Math.max(...counts) - Math.min(...counts)).toBeLessThanOrEqual(1);
-        expect(manager.getState().isPaused).toBe(true);
+            // Bust two players from the same table to force a 3/5 imbalance.
+            const state = manager.getState();
+            const firstTable = state.tables[0];
+            const ids = firstTable.seats.filter(s => s.player).map(s => s.player!.id!);
+            manager.bustPlayer(ids[0]);
+            manager.bustPlayer(ids[1]);
+
+            const counts = tableCounts(manager);
+            expect(Math.max(...counts) - Math.min(...counts)).toBeLessThanOrEqual(1);
+            expect(manager.getState().isPaused).toBe(true);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });
 
@@ -271,6 +282,27 @@ describe('final table', () => {
         expect(state.tables[0].tableNumber).toBe(1);
         expect(seatedCount(manager)).toBe(9);
         expect(state.unassignedPlayers).toHaveLength(0);
+    });
+
+    it('draws unassigned players into the final-table collapse', () => {
+        const manager = setup({
+            players: 10, playersPerTable: 5, shuffleFinalTable: true,
+            autoMerge: false, autoBalance: false,
+        });
+        manager.bustPlayer(1);
+        manager.bustPlayer(2);
+        manager.bustPlayer(3);
+        manager.bustPlayer(4);
+        manager.unbustPlayer(1); // player 1 is now unassigned
+        manager.bustPlayer(5);
+        manager.bustPlayer(6); // 4 seated + 1 unassigned = 5 active → collapse
+
+        const state = manager.getState();
+        expect(state.tables).toHaveLength(1);
+        expect(state.unassignedPlayers).toHaveLength(0);
+        expect(seatedCount(manager)).toBe(5);
+        const seatedIds = state.tables[0].seats.filter(s => s.player).map(s => s.player!.id!);
+        expect(seatedIds).toContain(1);
     });
 });
 
@@ -331,11 +363,20 @@ describe('standings and prizes', () => {
 
     it('falls back to seating order for survivor ids the operator did not order', () => {
         const manager = setup({ players: 3, playersPerTable: 9, prizes });
+        // Survivor rows from getStandings are pre-ordered by seating.
+        const seatingOrder = manager.getStandings().filter(r => r.isSurvivor).map(r => r.playerId);
+
         const archivedId = manager.finalize([]); // no operator input at all
         expect(archivedId).toBe(1);
         const [, rows] = vi.mocked(finalizeTournament).mock.calls[0];
         expect(rows).toHaveLength(3);
         expect(new Set(rows.map(r => r.place))).toEqual(new Set([1, 2, 3]));
+        // Assert the actual order, not just the place set: a reversed/arbitrary
+        // fallback would still pass the set check.
+        const byPlace = new Map(rows.map(r => [r.place, r.player_id]));
+        expect(byPlace.get(1)).toBe(seatingOrder[0]);
+        expect(byPlace.get(2)).toBe(seatingOrder[1]);
+        expect(byPlace.get(3)).toBe(seatingOrder[2]);
     });
 });
 
@@ -980,5 +1021,112 @@ describe('round-5 hardening', () => {
         for (const p of everyPlayer) {
             expect('email' in p).toBe(false);
         }
+    });
+});
+
+describe('round-6 hardening', () => {
+    it('coerces wrong-typed snapshot containers instead of wedging the engine', () => {
+        vi.mocked(getTournamentById).mockImplementationOnce(() => ({
+            id: 11,
+            name: 'Corrupt',
+            status: 'running',
+            state: JSON.stringify({
+                levels: [{ smallBlind: 100, bigBlind: 200, duration: 900 }],
+                tables: {},              // was accepted by `state.tables || []`
+                unassignedPlayers: 'nope',
+                bustedPlayers: 3,
+                prizes: {},
+            }),
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any));
+        const manager = new TournamentManager();
+        manager.switchTournament(11);
+
+        const state = manager.getState();
+        expect(state.isActive).toBe(true);
+        expect(state.tables).toEqual([]);
+        expect(state.unassignedPlayers).toEqual([]);
+        expect(state.bustedPlayers).toEqual([]);
+        expect(state.prizes).toEqual([]);
+        // getState()/getStateForSave()/getStandings() all threw on `.map`
+        // / `.find` before the fix, wedging every window and the timer.
+        expect(() => manager.getState()).not.toThrow();
+        expect(() => manager.getStandings()).not.toThrow();
+    });
+
+    it('preserves stalled wall-clock time when skipping a level', () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+        try {
+            vi.setSystemTime(0);
+            const manager = setup({ players: 4 });
+            manager.startTimer();
+
+            // Main process stalls (OS suspend / long DB op): the wall clock
+            // jumps but no tick runs.
+            vi.setSystemTime(600_000);
+            manager.goToNextLevel();
+            vi.advanceTimersByTime(1_000);
+
+            const state = manager.getState();
+            expect(state.currentLevelIndex).toBe(1);
+            // Without syncElapsed() before the re-anchor this reads 1 — the 600
+            // stalled seconds would be dropped from survivors' playtime.
+            expect(state.elapsedTime).toBe(601);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('computes time until the next break and null when none remains', () => {
+        const manager = new TournamentManager();
+        manager.initialize(
+            fakeWindow(),
+            [
+                { smallBlind: 100, bigBlind: 200, duration: 900 },
+                { smallBlind: 0, bigBlind: 0, duration: 300, isBreak: true },
+                { smallBlind: 200, bigBlind: 400, duration: 900 },
+            ],
+            makePlayers(4),
+            9,
+            'Break Test',
+            true, false, false,
+            10000,
+            [],
+            { entryFee: 0, currency: 'EUR', structureId: 1, structureName: 'S' },
+        );
+        manager.randomizeSeating();
+
+        expect(manager.getState().timeUntilNextBreak).toBe(900);
+        manager.goToNextLevel(); // now on the break
+        expect(manager.getState().timeUntilNextBreak).toBe(0);
+        manager.goToNextLevel(); // level 3 — no break ahead
+        expect(manager.getState().timeUntilNextBreak).toBeNull();
+    });
+
+    it('broadcasts the restored state so already-registered windows update', () => {
+        const win = fakeWindow();
+        vi.mocked(getRunningTournament).mockReturnValueOnce({
+            id: 21,
+            name: 'Resumed',
+            status: 'running',
+            state: JSON.stringify({
+                levels: [{ smallBlind: 1, bigBlind: 2, duration: 60 }],
+                tables: [],
+                unassignedPlayers: [],
+                bustedPlayers: [],
+            }),
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any);
+        const manager = new TournamentManager();
+        manager.addWindow(win); // sends an immediate (empty) snapshot first
+        vi.mocked(win.webContents.send).mockClear();
+
+        manager.load();
+
+        const calls = vi.mocked(win.webContents.send).mock.calls;
+        const last = calls[calls.length - 1];
+        expect(last[0]).toBe('timer-update');
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        expect((last[1] as any).id).toBe(21);
     });
 });

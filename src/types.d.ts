@@ -207,8 +207,8 @@ declare global {
         };
         api: {
             getPlayers: () => Promise<Player[]>;
-            addPlayer: (player: Player & { photoPath?: string }) => Promise<void>;
-            updatePlayer: (player: Player & { photoPath?: string }) => Promise<void>;
+            addPlayer: (player: Player & { photoPath?: string }) => Promise<{ changes: number; lastInsertRowid: number | bigint }>;
+            updatePlayer: (player: Player & { photoPath?: string }) => Promise<{ changes: number; lastInsertRowid: number | bigint }>;
             deletePlayer: (id: number) => Promise<void>;
             saveStructure: (structure: Structure) => Promise<{ lastInsertRowid: number | bigint }>;
             getStructure: (id: number) => Promise<Structure>;

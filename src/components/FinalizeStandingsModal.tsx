@@ -23,6 +23,7 @@ const FinalizeStandingsModal: React.FC<FinalizeStandingsModalProps> = ({ isOpen,
     // the live settings currency.
     const [currency, setCurrency] = useState<string | null>(null);
     const [isSaving, setIsSaving] = useState(false);
+    const [isLoading, setIsLoading] = useState(false);
 
     useEffect(() => {
         if (!isOpen) return;
@@ -46,6 +47,16 @@ const FinalizeStandingsModal: React.FC<FinalizeStandingsModalProps> = ({ isOpen,
             setCurrency(state.currency ?? null);
         };
         const open = async () => {
+            // Discard the previous tournament's standings/prizes immediately.
+            // The modal stays mounted while closed, so without this a reopen
+            // (after finalizing a previous tournament) would briefly render —
+            // and let the operator act on — stale players and money.
+            setSurvivors([]);
+            setEliminated([]);
+            setPrizes([]);
+            setEntryFee(0);
+            setCurrency(null);
+            setIsLoading(true);
             try {
                 const state = await window.api.getTournamentState();
                 if (cancelled) return;
@@ -58,6 +69,8 @@ const FinalizeStandingsModal: React.FC<FinalizeStandingsModalProps> = ({ isOpen,
                 await load();
             } catch (e) {
                 console.error('Failed to load standings', e);
+            } finally {
+                if (!cancelled) setIsLoading(false);
             }
         };
         open();
@@ -84,6 +97,7 @@ const FinalizeStandingsModal: React.FC<FinalizeStandingsModalProps> = ({ isOpen,
     };
 
     const handleConfirm = async () => {
+        if (isSaving || isLoading) return;
         setIsSaving(true);
         try {
             await window.api.finalizeTournament(survivors.map(s => s.playerId));
@@ -96,6 +110,7 @@ const FinalizeStandingsModal: React.FC<FinalizeStandingsModalProps> = ({ isOpen,
     };
 
     const handleSkip = async () => {
+        if (isSaving || isLoading) return;
         setIsSaving(true);
         try {
             // Await the archive so onFinalized's re-query of running
@@ -227,16 +242,17 @@ const FinalizeStandingsModal: React.FC<FinalizeStandingsModalProps> = ({ isOpen,
                     >
                         {t('common.cancel')}
                     </button>
+                    {isLoading && <span className="text-xs text-ink-muted mr-2">{t('common.loading')}</span>}
                     <button
                         onClick={handleSkip}
-                        disabled={isSaving}
-                        className="px-4 py-2 rounded text-sm font-medium bg-surface border border-line text-danger hover:bg-danger-soft transition-colors"
+                        disabled={isSaving || isLoading}
+                        className="px-4 py-2 rounded text-sm font-medium bg-surface border border-line text-danger hover:bg-danger-soft transition-colors disabled:opacity-50"
                     >
                         {t('finalize.skip')}
                     </button>
                     <button
                         onClick={handleConfirm}
-                        disabled={isSaving}
+                        disabled={isSaving || isLoading}
                         className="px-5 py-2 rounded text-sm font-medium bg-accent text-white hover:bg-accent-600 transition-colors disabled:opacity-50"
                     >
                         {isSaving ? t('finalize.saving') : t('finalize.confirm')}

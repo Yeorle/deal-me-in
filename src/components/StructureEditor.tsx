@@ -39,40 +39,56 @@ const StructureEditor: React.FC = () => {
             const searchParams = new URLSearchParams(location.search);
             setIsDetachedWindow(searchParams.get('window') === '1');
             const idParam = searchParams.get('id');
-            if (idParam) {
-                const id = parseInt(idParam, 10);
-                try {
-                    const struct = await window.api.getStructure(id);
-                    if (struct) {
-                        setEditId(struct.id!);
-                        setStructureName(struct.name);
-                        setStartingChips(struct.starting_chips);
-                        // Normalize: older structures may lack `ante` (JSON.stringify drops the key
-                        // when it was never set) — an undefined ante would render the
-                        // number input uncontrolled.
-                        const parsedLevels = (JSON.parse(struct.data) as BlindLevel[]).map(lvl => ({
-                            smallBlind: lvl.smallBlind ?? 0,
-                            bigBlind: lvl.bigBlind ?? 0,
-                            ante: lvl.ante ?? 0,
-                            duration: lvl.duration ?? 0,
-                            isBreak: !!lvl.isBreak,
-                            _key: newKey()
-                        }));
-                        setLevels(parsedLevels);
-                    } else {
-                        // Stale id (structure deleted while this window was
-                        // opening): say so instead of silently degrading to
-                        // "new structure" — saving would create an unintended
-                        // duplicate.
-                        setNotice({ kind: 'error', text: t('editor.notFound') });
-                    }
-                } catch (error) {
-                    console.error("Failed to load structure:", error);
-                    // Same hazard as a stale id: silently degrading to an
-                    // empty "new structure" form makes the next save create an
-                    // unintended duplicate — tell the operator instead.
+            setNotice(null);
+
+            const resetToNew = () => {
+                setEditId(null);
+                setStructureName('');
+                setStartingChips(1000);
+                setLevels([]);
+            };
+
+            if (!idParam) {
+                // The editor window is reused: it may have been showing
+                // structure A when the operator asked for a new one. Clear the
+                // form (and editId) so Save inserts a new row instead of
+                // overwriting A.
+                resetToNew();
+                return;
+            }
+            const id = parseInt(idParam, 10);
+            try {
+                const struct = await window.api.getStructure(id);
+                if (struct) {
+                    setEditId(struct.id!);
+                    setStructureName(struct.name);
+                    setStartingChips(struct.starting_chips);
+                    // Normalize: older structures may lack `ante` (JSON.stringify drops the key
+                    // when it was never set) — an undefined ante would render the
+                    // number input uncontrolled.
+                    const parsedLevels = (JSON.parse(struct.data) as BlindLevel[]).map(lvl => ({
+                        smallBlind: lvl.smallBlind ?? 0,
+                        bigBlind: lvl.bigBlind ?? 0,
+                        ante: lvl.ante ?? 0,
+                        duration: lvl.duration ?? 0,
+                        isBreak: !!lvl.isBreak,
+                        _key: newKey()
+                    }));
+                    setLevels(parsedLevels);
+                } else {
+                    // Stale id (structure deleted while this window was
+                    // opening): reset so a save can't overwrite whatever the
+                    // window was previously showing, and say why.
+                    resetToNew();
                     setNotice({ kind: 'error', text: t('editor.notFound') });
                 }
+            } catch (error) {
+                console.error("Failed to load structure:", error);
+                // Same hazard as a stale id: an unreachable structure must not
+                // leave a stale editId that would make the next save overwrite
+                // the previously loaded structure.
+                resetToNew();
+                setNotice({ kind: 'error', text: t('editor.notFound') });
             }
         };
         loadStructure();

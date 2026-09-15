@@ -3,7 +3,7 @@ import { Structure } from '../types';
 import { useSettings } from '../i18n/useSettings';
 
 const StructureList: React.FC = () => {
-    const { t } = useSettings();
+    const { t, language } = useSettings();
     const [structures, setStructures] = useState<Structure[]>([]);
 
     const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
@@ -78,7 +78,7 @@ const StructureList: React.FC = () => {
                         <div className="space-y-1 mb-5 text-sm flex-grow">
                             <div className="flex justify-between">
                                 <span className="text-ink-muted">{t('structureList.startingChips')}</span>
-                                <span className="text-ink tabular">{struct.starting_chips.toLocaleString()}</span>
+                                <span className="text-ink tabular">{struct.starting_chips.toLocaleString(language === 'fr' ? 'fr-FR' : 'en-US')}</span>
                             </div>
                             <div className="flex justify-between">
                                 <span className="text-ink-muted">{t('structureList.levels')}</span>

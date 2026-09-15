@@ -463,4 +463,16 @@ describe('exportAllData / importAllData round-trip', () => {
         expect(replaceAllData).not.toHaveBeenCalled();
         expect(fs.readFileSync(path.join(dstDir, 'photos', '111-aaa.jpg'), 'utf-8')).toBe('original');
     });
+
+    it('signals a media-extraction failure as committed (DB already swapped)', () => {
+        exportAllData(archivePath, srcDir);
+        // Occupy the destination projector path with a file so mkdirSync fails
+        // during extraction — a disk-level failure after the DB transaction.
+        fs.writeFileSync(path.join(dstDir, 'projector'), 'not a directory');
+
+        expect(() => importAllData(archivePath)).toThrow(/media file/);
+        // The DB swap must have committed before the failure, which is why the
+        // caller has to rehydrate rather than resume the previous singleton.
+        expect(replaceAllData).toHaveBeenCalledTimes(1);
+    });
 });
