@@ -109,6 +109,10 @@ Artifacts are written to `release/<version>/`. Targets are configured in
 [`electron-builder.json5`](./electron-builder.json5): DMG (macOS), NSIS installer
 (Windows x64), and AppImage (Linux).
 
+## Contributing
+
+Contributions are welcome — see [CONTRIBUTING.md](./CONTRIBUTING.md) for how to get started, the checks to run before opening a pull request, and a map of the codebase.
+
 ## License
 
 The source code in this repository is licensed under the [MIT License](LICENSE).
