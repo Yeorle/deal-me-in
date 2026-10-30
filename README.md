@@ -4,6 +4,8 @@ A desktop application for running live poker tournaments — blind-level timer, 
 
 Built with Electron, React and TypeScript.
 
+**Project status:** under active development.
+
 > **Looking for how to actually run a tournament?** See the [User Guide](./USER_GUIDE.md).
 
 ## Features
