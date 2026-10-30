@@ -6,6 +6,18 @@ Built with Electron, React and TypeScript.
 
 > **Looking for how to actually run a tournament?** See the [User Guide](./USER_GUIDE.md).
 
+## Table of Contents
+
+- [Features](#features)
+- [Screenshots](#screenshots)
+- [Technology](#technology)
+- [Architecture](#architecture)
+  - [Data storage](#data-storage)
+- [Development](#development)
+- [Quality checks](#quality-checks)
+- [Building a release](#building-a-release)
+- [License](#license)
+
 ## Features
 
 - **Blind-structure timer** — counts down each level, advances automatically, and supports break levels.
