@@ -117,3 +117,15 @@ This license applies to the software only. The sound effects in `src/assets/soun
 are NOT covered by the MIT License. They are sourced from Pixabay and remain
 subject to the Pixabay Content License. See [src/assets/sounds/CREDITS.md](src/assets/sounds/CREDITS.md)
 for details and per-file attribution.
+
+## Acknowledgements
+
+Thanks to everyone who has contributed to Deal me in — bug reports, feature
+ideas, translations and code all help make tournament nights run smoother.
+Contributions are welcome; see [CONTRIBUTING.md](./CONTRIBUTING.md) to get
+started.
+
+The app is built on the [Electron](https://www.electronjs.org/),
+[React](https://react.dev/) and [Vite](https://vitejs.dev/) stack, and would
+not be possible without these and the other open-source projects listed under
+[Technology](#technology).
